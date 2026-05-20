@@ -1,0 +1,275 @@
+#!/usr/bin/env bash
+# Mustry Academy — CI/CD for Ignition Masterclass
+# Preflight environment check
+#
+# Validates that the participant's machine has everything needed for Day 1.
+# Writes a report to ./preflight-report.txt that the TA can read.
+
+set -u
+
+REPORT_FILE="$(pwd)/preflight-report.txt"
+FAILED=0
+WARNINGS=0
+
+# Colours (only when stdout is a terminal)
+if [ -t 1 ]; then
+  RED=$'\033[0;31m'
+  GREEN=$'\033[0;32m'
+  YELLOW=$'\033[0;33m'
+  BLUE=$'\033[0;34m'
+  BOLD=$'\033[1m'
+  RESET=$'\033[0m'
+else
+  RED=""; GREEN=""; YELLOW=""; BLUE=""; BOLD=""; RESET=""
+fi
+
+# Initialise the report file
+{
+  echo "Mustry Academy — Preflight Report"
+  echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+  echo "Host: $(uname -a)"
+  echo "----------------------------------------"
+} > "$REPORT_FILE"
+
+log_pass() {
+  echo "${GREEN}✓${RESET} $1"
+  echo "PASS: $1" >> "$REPORT_FILE"
+}
+
+log_fail() {
+  echo "${RED}✗${RESET} $1"
+  echo "  ${YELLOW}→ $2${RESET}"
+  echo "FAIL: $1" >> "$REPORT_FILE"
+  echo "  suggestion: $2" >> "$REPORT_FILE"
+  FAILED=$((FAILED + 1))
+}
+
+log_warn() {
+  echo "${YELLOW}!${RESET} $1"
+  echo "  ${YELLOW}→ $2${RESET}"
+  echo "WARN: $1" >> "$REPORT_FILE"
+  echo "  note: $2" >> "$REPORT_FILE"
+  WARNINGS=$((WARNINGS + 1))
+}
+
+log_info() {
+  echo "${BLUE}ℹ${RESET} $1"
+  echo "INFO: $1" >> "$REPORT_FILE"
+}
+
+section() {
+  echo ""
+  echo "${BOLD}$1${RESET}"
+  echo "" >> "$REPORT_FILE"
+  echo "[$1]" >> "$REPORT_FILE"
+}
+
+# Compare semantic versions: returns 0 if $1 >= $2
+version_ge() {
+  printf '%s\n%s\n' "$2" "$1" | sort -V -C
+}
+
+echo "${BOLD}Mustry Academy — Preflight${RESET}"
+echo "Checking that your machine is ready for Day 1..."
+echo ""
+
+# ---------------------------------------------------------------------------
+section "Operating system"
+# ---------------------------------------------------------------------------
+OS="$(uname -s)"
+case "$OS" in
+  Linux)
+    if grep -qi microsoft /proc/version 2>/dev/null; then
+      log_pass "Running on WSL2 ($(lsb_release -ds 2>/dev/null || cat /etc/os-release | grep ^PRETTY_NAME | cut -d= -f2))"
+    else
+      log_pass "Running on Linux ($(lsb_release -ds 2>/dev/null || cat /etc/os-release 2>/dev/null | grep ^PRETTY_NAME | cut -d= -f2 || echo unknown))"
+    fi
+    ;;
+  Darwin)
+    log_pass "Running on macOS $(sw_vers -productVersion 2>/dev/null)"
+    ARCH="$(uname -m)"
+    if [ "$ARCH" = "arm64" ]; then
+      log_info "Apple Silicon detected — Ignition publishes linux/arm64 images, all good"
+    fi
+    ;;
+  *)
+    log_fail "Unsupported OS: $OS" "Please run from inside WSL2 (Windows) or use macOS/Linux"
+    ;;
+esac
+
+# ---------------------------------------------------------------------------
+section "Git"
+# ---------------------------------------------------------------------------
+if command -v git >/dev/null 2>&1; then
+  GIT_VERSION="$(git --version | awk '{print $3}')"
+  if version_ge "$GIT_VERSION" "2.40"; then
+    log_pass "git $GIT_VERSION"
+  else
+    log_warn "git $GIT_VERSION (recommend ≥ 2.40)" "Consider upgrading; older versions work but some commands behave differently"
+  fi
+else
+  log_fail "git not found" "Install Git from https://git-scm.com/"
+fi
+
+# ---------------------------------------------------------------------------
+section "Docker"
+# ---------------------------------------------------------------------------
+if command -v docker >/dev/null 2>&1; then
+  DOCKER_VERSION="$(docker --version | awk '{print $3}' | tr -d ',')"
+  if version_ge "$DOCKER_VERSION" "24.0"; then
+    log_pass "docker $DOCKER_VERSION"
+  else
+    log_warn "docker $DOCKER_VERSION (recommend ≥ 24)" "Upgrade Docker Desktop or Docker Engine"
+  fi
+
+  if docker info >/dev/null 2>&1; then
+    log_pass "Docker daemon is running"
+  else
+    log_fail "Docker daemon is not running" "Start Docker Desktop (Win/Mac) or run 'sudo systemctl start docker' (Linux)"
+  fi
+
+  # Docker Compose v2 (the 'docker compose' subcommand, not the legacy 'docker-compose' binary)
+  if docker compose version >/dev/null 2>&1; then
+    COMPOSE_VERSION="$(docker compose version --short 2>/dev/null)"
+    log_pass "docker compose v$COMPOSE_VERSION"
+  else
+    log_fail "docker compose v2 not found" "On Linux: 'sudo apt install docker-compose-plugin'. On Win/Mac it ships with Docker Desktop."
+  fi
+else
+  log_fail "docker not found" "Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+fi
+
+# ---------------------------------------------------------------------------
+section "GitHub CLI"
+# ---------------------------------------------------------------------------
+if command -v gh >/dev/null 2>&1; then
+  GH_VERSION="$(gh --version | head -1 | awk '{print $3}')"
+  log_pass "gh $GH_VERSION"
+
+  if gh auth status >/dev/null 2>&1; then
+    GH_USER="$(gh api user --jq .login 2>/dev/null || echo unknown)"
+    log_pass "Authenticated to GitHub as $GH_USER"
+  else
+    log_fail "gh is not authenticated" "Run 'gh auth login' and follow the prompts"
+  fi
+else
+  log_fail "gh (GitHub CLI) not found" "Install from https://cli.github.com/"
+fi
+
+# ---------------------------------------------------------------------------
+section "VS Code"
+# ---------------------------------------------------------------------------
+if command -v code >/dev/null 2>&1; then
+  CODE_VERSION="$(code --version 2>/dev/null | head -1)"
+  log_pass "VS Code $CODE_VERSION"
+else
+  log_warn "'code' command not found in PATH" "Open VS Code → Cmd/Ctrl+Shift+P → 'Shell Command: Install code command in PATH'"
+fi
+
+# ---------------------------------------------------------------------------
+section "Disk and memory"
+# ---------------------------------------------------------------------------
+FREE_GB=""
+if command -v df >/dev/null 2>&1; then
+  case "$OS" in
+    Linux)
+      # GNU df: -B1G gives output in 1-GB blocks
+      FREE_GB="$(df -B1G --output=avail . 2>/dev/null | tail -1 | tr -dc '0-9')"
+      ;;
+    Darwin)
+      # BSD df wraps long filesystem names onto a second line, which makes
+      # `awk NR==2` unreliable. -P forces single-line POSIX output; -k gives
+      # 1024-byte blocks (most portable), and we convert to GB ourselves.
+      FREE_KB="$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4}')"
+      if [ -n "${FREE_KB:-}" ]; then
+        FREE_GB=$((FREE_KB / 1024 / 1024))
+      fi
+      ;;
+  esac
+fi
+
+if [ -n "$FREE_GB" ] && [ "$FREE_GB" -ge 20 ] 2>/dev/null; then
+  log_pass "Free disk space: ${FREE_GB} GB"
+elif [ -n "$FREE_GB" ]; then
+  log_warn "Free disk space looks low (${FREE_GB} GB)" "Recommend ≥ 20 GB free for Ignition images + Docker volumes"
+else
+  log_warn "Could not determine free disk space" "Run 'df -h .' manually and confirm you have ≥ 20 GB free"
+fi
+
+# ---------------------------------------------------------------------------
+section "Ignition image"
+# ---------------------------------------------------------------------------
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  echo "  Pulling inductiveautomation/ignition:8.3 (this may take a few minutes on first run)..."
+  if docker pull inductiveautomation/ignition:8.3 >/dev/null 2>&1; then
+    log_pass "Pulled inductiveautomation/ignition:8.3"
+  else
+    log_fail "Could not pull inductiveautomation/ignition:8.3" "Check internet connectivity and Docker Hub access; corporate firewalls sometimes block this"
+  fi
+else
+  log_warn "Skipping image pull (Docker not available)" "Fix Docker first, then re-run"
+fi
+
+# ---------------------------------------------------------------------------
+section "Gateway smoke test"
+# ---------------------------------------------------------------------------
+if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+  CONTAINER_NAME="mustry-preflight-gateway"
+  # Clean up any previous run
+  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+
+  echo "  Starting a temporary Ignition gateway on port 18088..."
+  if docker run -d --rm \
+       --name "$CONTAINER_NAME" \
+       -p 18088:8088 \
+       -e ACCEPT_IGNITION_EULA=Y \
+       -e GATEWAY_ADMIN_PASSWORD=preflight \
+       inductiveautomation/ignition:8.3 >/dev/null 2>&1; then
+    # Wait up to 90s for the gateway to come up
+    SUCCESS=0
+    for i in $(seq 1 30); do
+      if curl -fsS -o /dev/null --max-time 3 http://localhost:18088/system/gwinfo 2>/dev/null; then
+        SUCCESS=1
+        break
+      fi
+      sleep 3
+    done
+
+    if [ $SUCCESS -eq 1 ]; then
+      log_pass "Gateway responded on http://localhost:18088 (took ~$((i * 3))s to start)"
+    else
+      log_fail "Gateway did not respond within 90s" "Run 'docker logs $CONTAINER_NAME' to see what went wrong, then check Discord #preflight-help"
+    fi
+
+    # Tear down
+    docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  else
+    log_fail "Could not start a gateway container" "Check that port 18088 is free and Docker has enough memory"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+echo ""
+echo "${BOLD}Summary${RESET}"
+echo "Report written to: $REPORT_FILE"
+echo ""
+
+{
+  echo ""
+  echo "----------------------------------------"
+  echo "Summary: $FAILED failures, $WARNINGS warnings"
+} >> "$REPORT_FILE"
+
+if [ "$FAILED" -eq 0 ]; then
+  echo "${GREEN}${BOLD}All required checks passed.${RESET}"
+  if [ "$WARNINGS" -gt 0 ]; then
+    echo "${YELLOW}${WARNINGS} warning(s) — review above.${RESET}"
+  fi
+  echo ""
+  echo "Paste the report into Discord #preflight-help to let the TA know you're ready."
+  exit 0
+else
+  echo "${RED}${BOLD}${FAILED} required check(s) failed.${RESET}"
+  echo "Read the suggestions above, then paste $REPORT_FILE into Discord #preflight-help."
+  exit 1
+fi

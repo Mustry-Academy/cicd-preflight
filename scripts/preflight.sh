@@ -20,6 +20,11 @@ FAILED=0
 WARNINGS=0
 REPORT_FILE="$(pwd)/preflight-report.txt"
 
+# Flags (see --help). Set by the argument parser further down.
+QUIET=0
+NO_PULL=0
+SKIP_SMOKE=0
+
 # Colours (only when stdout is a terminal)
 if [ -t 1 ]; then
   RED=$'\033[0;31m'
@@ -36,8 +41,15 @@ fi
 # Logging helpers — each prints to the terminal (with colour) and appends a
 # plain-text line to the report file.
 # ---------------------------------------------------------------------------
+# say — print to the terminal unless --quiet. The report file always gets the
+# full record regardless; --quiet only trims the on-screen noise (passes/info),
+# leaving warnings, failures and the final summary visible.
+say() {
+  [ "$QUIET" -eq 1 ] || echo "$1"
+}
+
 log_pass() {
-  echo "${GREEN}✓${RESET} $1"
+  say "${GREEN}✓${RESET} $1"
   echo "PASS: $1" >> "$REPORT_FILE"
 }
 
@@ -58,15 +70,17 @@ log_warn() {
 }
 
 log_info() {
-  echo "${BLUE}ℹ${RESET} $1"
+  say "${BLUE}ℹ${RESET} $1"
   echo "INFO: $1" >> "$REPORT_FILE"
 }
 
 section() {
-  echo ""
-  echo "${BOLD}$1${RESET}"
-  echo "" >> "$REPORT_FILE"
-  echo "[$1]" >> "$REPORT_FILE"
+  say ""
+  say "${BOLD}$1${RESET}"
+  {
+    echo ""
+    echo "[$1]"
+  } >> "$REPORT_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -140,12 +154,19 @@ CHECKS=(
 # Settings the smoke/image checks share.
 IGNITION_IMAGE="inductiveautomation/ignition:8.3"
 SMOKE_CONTAINER="mustry-preflight-gateway"
-SMOKE_PORT=18088
 
 # docker_ready — Docker is installed AND its daemon answers. The image and smoke
 # checks both depend on this, so it lives in one place.
 docker_ready() {
   command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1
+}
+
+# smoke_cleanup — remove the throwaway gateway container. `docker run --rm` only
+# cleans up on the container's own exit, so if the user Ctrl-Cs during the 90s
+# wait the container would linger. A trap (armed in check_smoke) calls this on
+# EXIT/INT/TERM. Safe to run repeatedly and when no container exists.
+smoke_cleanup() {
+  docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -382,11 +403,15 @@ check_ram() {
 check_image() {
   local sev="$1"
   section "Ignition image"
+  if [ "$NO_PULL" -eq 1 ]; then
+    log_info "Skipping image pull (--no-pull) — relying on a locally cached image"
+    return
+  fi
   if ! docker_ready; then
     log_warn "Skipping image pull (Docker not available)" "Fix Docker first, then re-run"
     return
   fi
-  echo "  Pulling $IGNITION_IMAGE (this may take a few minutes on first run)..."
+  say "  Pulling $IGNITION_IMAGE (this may take a few minutes on first run)..."
   if docker pull "$IGNITION_IMAGE" >/dev/null 2>&1; then
     log_pass "Pulled $IGNITION_IMAGE"
   else
@@ -397,25 +422,42 @@ check_image() {
 check_smoke() {
   local sev="$1"
   section "Gateway smoke test"
+  if [ "$SKIP_SMOKE" -eq 1 ]; then
+    log_info "Skipping gateway smoke test (--skip-smoke)"
+    return
+  fi
   if ! docker_ready; then
     log_warn "Skipping gateway smoke test (Docker not available)" "Fix Docker first, then re-run"
     return
   fi
 
-  # Clean up any previous run
-  docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
+  # Clean up any previous run, and make sure an interrupt mid-wait tears the
+  # container down too (--rm alone only fires on the container's own exit).
+  smoke_cleanup
+  trap 'smoke_cleanup' EXIT
+  trap 'smoke_cleanup; exit 130' INT TERM
 
-  echo "  Starting a temporary Ignition gateway on port ${SMOKE_PORT}..."
+  # Publish the gateway's 8088 to a Docker-assigned ephemeral host port, so a
+  # busy host port can't fail the test. We then ask Docker which port it picked.
+  say "  Starting a temporary Ignition gateway on a free port..."
   if docker run -d --rm \
        --name "$SMOKE_CONTAINER" \
-       -p "${SMOKE_PORT}:8088" \
+       -p 8088 \
        -e ACCEPT_IGNITION_EULA=Y \
        -e GATEWAY_ADMIN_PASSWORD=preflight \
        "$IGNITION_IMAGE" >/dev/null 2>&1; then
+    # docker port -> e.g. "0.0.0.0:54321"; take the trailing port number.
+    local port; port="$(docker port "$SMOKE_CONTAINER" 8088/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')"
+    if [ -z "$port" ]; then
+      log_missing "$sev" "Could not determine the gateway's published port" "Run 'docker port $SMOKE_CONTAINER' to inspect, then check Discord #preflight-help"
+      docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
+      return
+    fi
+
     # Wait up to 90s for the gateway to come up
     local ok=0 i
     for i in $(seq 1 30); do
-      if curl -fsS -o /dev/null --max-time 3 "http://localhost:${SMOKE_PORT}/system/gwinfo" 2>/dev/null; then
+      if curl -fsS -o /dev/null --max-time 3 "http://localhost:${port}/system/gwinfo" 2>/dev/null; then
         ok=1
         break
       fi
@@ -423,14 +465,14 @@ check_smoke() {
     done
 
     if [ "$ok" -eq 1 ]; then
-      log_pass "Gateway responded on http://localhost:${SMOKE_PORT} (took ~$((i * 3))s to start)"
+      log_pass "Gateway responded on http://localhost:${port} (took ~$((i * 3))s to start)"
     else
       log_missing "$sev" "Gateway did not respond within 90s" "Run 'docker logs $SMOKE_CONTAINER' to see what went wrong, then check Discord #preflight-help"
     fi
 
     docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
   else
-    log_missing "$sev" "Could not start a gateway container" "Check that port ${SMOKE_PORT} is free and Docker has enough memory"
+    log_missing "$sev" "Could not start a gateway container" "Ensure Docker has enough memory; see 'docker logs $SMOKE_CONTAINER' if it was created"
   fi
 }
 
@@ -467,15 +509,46 @@ validate_manifest() {
 # ---------------------------------------------------------------------------
 # Argument handling
 # ---------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+Mustry Academy preflight — checks your machine is ready for Day 1.
+
+Usage: scripts/preflight.sh [options]
+
+Options:
+  --no-pull       Skip pulling the Ignition image (use a locally cached one)
+  --skip-smoke    Skip starting the throwaway gateway container
+  --quiet         Only print warnings, failures and the summary
+  --list          Print the checks table (Markdown) and exit
+  -h, --help      Show this help and exit
+
+Exit status is non-zero if any *required* check fails.
+EOF
+}
+
 validate_manifest
-if [ "${1:-}" = "--list" ]; then
-  print_checks_table
-  exit 0
-fi
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -h|--help)    usage; exit 0 ;;
+    --list)       print_checks_table; exit 0 ;;
+    --no-pull)    NO_PULL=1 ;;
+    --skip-smoke) SKIP_SMOKE=1 ;;
+    --quiet)      QUIET=1 ;;
+    *)            echo "preflight: unknown option '$1'" >&2; usage >&2; exit 2 ;;
+  esac
+  shift
+done
 
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+# Prefer the working directory for the report, but fall back to a temp dir if
+# it's read-only (e.g. the repo was cloned somewhere the user can't write to).
+if ! : > "$REPORT_FILE" 2>/dev/null; then
+  REPORT_FILE="${TMPDIR:-/tmp}/preflight-report.txt"
+fi
+
 {
   echo "Mustry Academy — Preflight Report"
   echo "Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -483,9 +556,9 @@ fi
   echo "----------------------------------------"
 } > "$REPORT_FILE"
 
-echo "${BOLD}Mustry Academy — Preflight${RESET}"
-echo "Checking that your machine is ready for Day 1..."
-echo ""
+say "${BOLD}Mustry Academy — Preflight${RESET}"
+say "Checking that your machine is ready for Day 1..."
+say ""
 
 OS="$(uname -s)"   # set early so checks ordered after check_os can still rely on it
 for entry in "${CHECKS[@]}"; do

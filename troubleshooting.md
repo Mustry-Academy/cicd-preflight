@@ -23,11 +23,10 @@ If those fail too, you're behind a corporate proxy. Configure Docker Desktop's p
 
 ## "Gateway did not respond within 90s"
 
-Three common causes:
+Two common causes (the preflight publishes the gateway on a Docker-assigned free port, so a busy port is no longer one of them):
 
-1. **Port 18088 already in use.** `lsof -i :18088` (Mac/Linux) or `netstat -ano | findstr 18088` (Windows) to find what's using it.
-2. **Docker has too little memory.** In Docker Desktop → Settings → Resources, allocate at least 4 GB RAM to Docker.
-3. **First-pull slowness.** Try `docker logs mustry-preflight-gateway` (if the container is still around) or just re-run the preflight; subsequent runs are much faster.
+1. **Docker has too little memory.** In Docker Desktop → Settings → Resources, allocate at least 4 GB RAM to Docker.
+2. **First-pull slowness.** Try `docker logs mustry-preflight-gateway` (if the container is still around) or just re-run the preflight; subsequent runs are much faster.
 
 ## "gh is not authenticated"
 

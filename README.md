@@ -14,6 +14,18 @@ cd cicd-preflight
 
 The script writes a report to `./preflight-report.txt`. **Paste the contents of that file into the Discord `#preflight-help` channel** so the TA can confirm you're ready or help debug.
 
+### Options
+
+```
+--no-pull       Skip pulling the Ignition image (use a locally cached one)
+--skip-smoke    Skip starting the throwaway gateway container
+--quiet         Only print warnings, failures and the summary
+--list          Print the checks table (Markdown) and exit
+-h, --help      Show this help and exit
+```
+
+The image pull and gateway smoke test are the slow steps; `--no-pull --skip-smoke` makes for a fast re-run while you're fixing the lighter checks. Run `./scripts/preflight.sh --help` to see this list anytime.
+
 ## What it checks
 
 Every check is one of two tiers:

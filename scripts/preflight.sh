@@ -259,6 +259,44 @@ else
   log_warn "Could not determine free disk space" "Run 'df -h .' manually and confirm you have ≥ 20 GB free"
 fi
 
+# On WSL2 this measures the Linux/WSL2 filesystem, NOT the Windows C: drive.
+# That's the number that matters (Docker images and volumes live here), but it
+# can differ a lot from what Windows Explorer shows — so call it out explicitly.
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  log_info "Disk space above is measured on the WSL2 filesystem, not your Windows C: drive — Docker stores images/volumes here, so this is the figure that counts"
+fi
+
+# Total physical RAM. Ignition + Docker want ~8 GB to run comfortably. We check
+# total (stable) rather than 'free' (too volatile to threshold reliably).
+TOTAL_RAM_GB=""
+case "$OS" in
+  Linux)
+    # MemTotal in /proc/meminfo is in kB. On WSL2 this reflects the memory the
+    # WSL2 VM is allowed — i.e. the memory actually available to Docker.
+    if [ -r /proc/meminfo ]; then
+      MEM_KB="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null)"
+      [ -n "${MEM_KB:-}" ] && TOTAL_RAM_GB=$((MEM_KB / 1024 / 1024))
+    fi
+    ;;
+  Darwin)
+    # hw.memsize is total physical RAM in bytes.
+    MEM_BYTES="$(sysctl -n hw.memsize 2>/dev/null)"
+    [ -n "${MEM_BYTES:-}" ] && TOTAL_RAM_GB=$((MEM_BYTES / 1024 / 1024 / 1024))
+    ;;
+esac
+
+if [ -n "$TOTAL_RAM_GB" ] && [ "$TOTAL_RAM_GB" -ge 8 ] 2>/dev/null; then
+  log_pass "Total RAM: ${TOTAL_RAM_GB} GB"
+elif [ -n "$TOTAL_RAM_GB" ]; then
+  log_warn "Total RAM looks low (${TOTAL_RAM_GB} GB)" "Recommend ≥ 8 GB; Ignition + Docker can be tight below that. On WSL2, raise the limit via a .wslconfig 'memory=' setting."
+else
+  log_warn "Could not determine total RAM" "Confirm you have ≥ 8 GB available to Docker"
+fi
+
+if grep -qi microsoft /proc/version 2>/dev/null; then
+  log_info "RAM above is the WSL2 VM allocation (set in C:\\Users\\<you>\\.wslconfig), not your full Windows RAM"
+fi
+
 # ---------------------------------------------------------------------------
 section "Ignition image"
 # ---------------------------------------------------------------------------

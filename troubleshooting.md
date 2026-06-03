@@ -44,6 +44,23 @@ This isn't strictly required, but it makes the labs easier. To add it:
 - **Mac:** open VS Code → `Cmd+Shift+P` → "Shell Command: Install 'code' command in PATH"
 - **Windows / Linux:** it's typically already on PATH after a default install. Restart your shell first.
 
+## "Total RAM looks low" or "Free disk space looks low"
+
+Both are **warnings, not failures**. Ignition + Docker run comfortably with **≥ 8 GB RAM** and
+**≥ 20 GB free disk**; below that, the gateway container may be slow or get OOM-killed.
+
+**On WSL2 (Windows), these numbers are measured inside WSL2, not for your whole Windows PC** —
+which is what matters, because Docker keeps its images, volumes and containers there. To give
+WSL2 more RAM, create or edit `C:\Users\<you>\.wslconfig`:
+
+```ini
+[wsl2]
+memory=12GB
+```
+
+Then run `wsl --shutdown` in PowerShell and restart your distro. For disk, prune unused Docker
+data with `docker system prune -a` and remove old volumes you no longer need.
+
 ## "Ignition Designer Launcher not detected"
 
 This is a **warning, not a failure** — the script looks for the Launcher in its usual install

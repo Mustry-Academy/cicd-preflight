@@ -25,7 +25,8 @@ The script writes a report to `./preflight-report.txt`. **Paste the contents of 
 | `gh` (GitHub CLI) and `gh auth status` | ✅ |
 | VS Code installed | ✅ |
 | Ignition Designer Launcher installed (best-effort detection) | Recommended |
-| At least 8 GB RAM free for Docker | ✅ |
+| At least 20 GB free disk space | Recommended |
+| At least 8 GB total RAM | Recommended |
 | Can pull `inductiveautomation/ignition:8.3` | ✅ |
 | Can start a gateway container and hit `http://localhost:8088` | ✅ |
 
@@ -38,7 +39,7 @@ The script writes a report to `./preflight-report.txt`. **Paste the contents of 
 
 ## Platform notes
 
-- **Windows:** you must use **WSL2 with Docker Desktop's WSL2 backend**. Run the preflight script from inside Ubuntu (or your WSL distro of choice). Native Windows / Git Bash setups are not supported.
+- **Windows:** you must use **WSL2 with Docker Desktop's WSL2 backend**. Run the preflight script from inside Ubuntu (or your WSL distro of choice). Native Windows / Git Bash setups are not supported. Note that the **disk space and RAM figures are measured inside WSL2, not for your whole Windows machine** — that's deliberate, since Docker images, volumes and containers live in WSL2. The RAM number is the WSL2 VM's allocation (configurable in `C:\Users\<you>\.wslconfig`).
 - **macOS:** Apple Silicon is fully supported. Ignition publishes `linux/arm64` images.
 - **Linux:** Docker Engine + Docker Compose v2. The smoothest experience.
 

@@ -44,6 +44,17 @@ This isn't strictly required, but it makes the labs easier. To add it:
 - **Mac:** open VS Code → `Cmd+Shift+P` → "Shell Command: Install 'code' command in PATH"
 - **Windows / Linux:** it's typically already on PATH after a default install. Restart your shell first.
 
+## "Ignition Designer Launcher not detected"
+
+This is a **warning, not a failure** — the script looks for the Launcher in its usual install
+locations and the `~/.ignition/clientlauncher-data` config folder, but detection is best-effort
+(the Launcher isn't on your PATH). If you already have it, you can safely ignore the warning.
+
+If you don't have it yet, install it from your gateway: open the gateway web page → **Downloads**
+→ **Designer Launcher**, download for your OS, and run it once. On Windows the Launcher installs
+on the Windows host (not inside WSL2) — the preflight probes `/mnt/c/Users/.../.ignition/...` to
+find it, so a Windows-host install may still show the warning depending on your user folder.
+
 ## Still stuck?
 
 Paste the contents of `preflight-report.txt` into the Discord `#preflight-help` channel. The TA monitors it daily and will respond within 24 hours on weekdays.

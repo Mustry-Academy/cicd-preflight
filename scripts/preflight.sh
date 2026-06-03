@@ -167,6 +167,69 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+section "Ignition Designer Launcher"
+# ---------------------------------------------------------------------------
+# The Designer itself isn't a standalone install — it's downloaded on demand by
+# the Designer Launcher, which is not on PATH and exposes no version CLI. So we
+# look for the config dir it creates (~/.ignition/clientlauncher-data) plus the
+# known per-OS install locations. This is best-effort: a miss is a warning, not
+# a failure, and on WSL2 we also probe the Windows host under /mnt/c.
+
+DESIGNER_FOUND=""   # "strong" | "weak" | ""
+DESIGNER_WHERE=""
+IS_WSL=0
+grep -qi microsoft /proc/version 2>/dev/null && IS_WSL=1
+
+check_launcher_dir() {   # $1 = a candidate clientlauncher-data dir
+  [ -d "$1" ] || return 1
+  if ls "$1"/designerlauncher* >/dev/null 2>&1; then
+    DESIGNER_FOUND="strong"; DESIGNER_WHERE="$1"
+  else
+    DESIGNER_FOUND="${DESIGNER_FOUND:-weak}"; DESIGNER_WHERE="${DESIGNER_WHERE:-$1}"
+  fi
+}
+
+# 1. Primary signal: the launcher config dir (native home, plus Windows host on WSL2)
+check_launcher_dir "$HOME/.ignition/clientlauncher-data"
+if [ "$IS_WSL" -eq 1 ]; then
+  for d in /mnt/c/Users/*/.ignition/clientlauncher-data \
+           /mnt/c/Users/*/AppData/Roaming/Inductive\ Automation/clientlauncher-data; do
+    check_launcher_dir "$d"
+  done
+fi
+
+# 2. Per-OS native app locations (higher confidence where a fixed path exists)
+case "$OS" in
+  Darwin)
+    for app in "/Applications/Designer Launcher.app" "$HOME/Applications/Designer Launcher.app"; do
+      [ -d "$app" ] && { DESIGNER_FOUND="strong"; DESIGNER_WHERE="$app"; }
+    done
+    ;;
+  Linux)
+    # Native Linux has no fixed install path (tar.gz extracted anywhere) — a desktop
+    # entry is the best app-level hint we have.
+    [ -e "$HOME/.local/share/applications/designerlauncher.desktop" ] && \
+      { DESIGNER_FOUND="strong"; DESIGNER_WHERE="$HOME/.local/share/applications/designerlauncher.desktop"; }
+    if [ "$IS_WSL" -eq 1 ]; then
+      for p in /mnt/c/Users/*/AppData/Local/Programs/Designer\ Launcher \
+               /mnt/c/Program\ Files/*Designer*Launcher* \
+               /mnt/c/Program\ Files\ \(x86\)/*Designer*Launcher*; do
+        [ -e "$p" ] && { DESIGNER_FOUND="strong"; DESIGNER_WHERE="$p"; }
+      done
+    fi
+    ;;
+esac
+
+if [ "$DESIGNER_FOUND" = "strong" ]; then
+  log_pass "Ignition Designer Launcher detected ($DESIGNER_WHERE)"
+elif [ "$DESIGNER_FOUND" = "weak" ]; then
+  log_info "Found $DESIGNER_WHERE but no designerlauncher config yet — launch a Designer once to confirm"
+else
+  log_warn "Ignition Designer Launcher not detected" \
+    "Open your gateway web page → Downloads → Designer Launcher (or it installs on first Designer launch). Detection is best-effort — ignore this if you already have it."
+fi
+
+# ---------------------------------------------------------------------------
 section "Disk and memory"
 # ---------------------------------------------------------------------------
 FREE_GB=""

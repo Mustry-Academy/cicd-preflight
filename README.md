@@ -24,6 +24,7 @@ The script writes a report to `./preflight-report.txt`. **Paste the contents of 
 | `docker compose` v2 | ✅ |
 | `gh` (GitHub CLI) and `gh auth status` | ✅ |
 | VS Code installed | ✅ |
+| Ignition Designer Launcher installed (best-effort detection) | Recommended |
 | At least 8 GB RAM free for Docker | ✅ |
 | Can pull `inductiveautomation/ignition:8.3` | ✅ |
 | Can start a gateway container and hit `http://localhost:8088` | ✅ |

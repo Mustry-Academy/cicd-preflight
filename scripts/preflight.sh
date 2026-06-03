@@ -64,6 +64,38 @@ section() {
   echo "[$1]" >> "$REPORT_FILE"
 }
 
+# ---------------------------------------------------------------------------
+# Severity taxonomy
+# ---------------------------------------------------------------------------
+# Every check belongs to exactly one tier, and that tier decides what happens
+# when its core requirement is absent or broken:
+#
+#   required     You literally cannot complete Day 1 without it. A miss is a
+#                hard FAILURE and the script exits non-zero, so CI and the TA
+#                can gate on it.   (os, git, docker, gh, ignition image, smoke)
+#
+#   recommended  Things work without it, but the labs are rougher. A miss is a
+#                WARNING only and never changes the exit code.
+#                                  (VS Code, Designer Launcher, disk, RAM)
+#
+# Soft sub-conditions can still downgrade: Docker is *required*, but "Docker is
+# installed yet below the recommended version" is only a warning, because an
+# old Docker still works. Use log_missing for the primary present/absent
+# decision; fall back to log_warn directly for those soft sub-conditions.
+REQUIRED="required"
+RECOMMENDED="recommended"
+
+# log_missing SEVERITY MESSAGE SUGGESTION
+# Report an absent/broken requirement at the severity its tier dictates:
+# a required miss fails, a recommended miss warns.
+log_missing() {
+  if [ "$1" = "$REQUIRED" ]; then
+    log_fail "$2" "$3"
+  else
+    log_warn "$2" "$3"
+  fi
+}
+
 # Compare semantic versions: returns 0 if $1 >= $2
 version_ge() {
   printf '%s\n%s\n' "$2" "$1" | sort -V -C
@@ -93,7 +125,7 @@ case "$OS" in
     fi
     ;;
   *)
-    log_fail "Unsupported OS: $OS" "Please run from inside WSL2 (Windows) or use macOS/Linux"
+    log_missing "$REQUIRED" "Unsupported OS: $OS" "Please run from inside WSL2 (Windows) or use macOS/Linux"
     ;;
 esac
 
@@ -108,7 +140,7 @@ if command -v git >/dev/null 2>&1; then
     log_warn "git $GIT_VERSION (recommend ≥ 2.40)" "Consider upgrading; older versions work but some commands behave differently"
   fi
 else
-  log_fail "git not found" "Install Git from https://git-scm.com/"
+  log_missing "$REQUIRED" "git not found" "Install Git from https://git-scm.com/"
 fi
 
 # ---------------------------------------------------------------------------
@@ -125,7 +157,7 @@ if command -v docker >/dev/null 2>&1; then
   if docker info >/dev/null 2>&1; then
     log_pass "Docker daemon is running"
   else
-    log_fail "Docker daemon is not running" "Start Docker Desktop (Win/Mac) or run 'sudo systemctl start docker' (Linux)"
+    log_missing "$REQUIRED" "Docker daemon is not running" "Start Docker Desktop (Win/Mac) or run 'sudo systemctl start docker' (Linux)"
   fi
 
   # Docker Compose v2 (the 'docker compose' subcommand, not the legacy 'docker-compose' binary)
@@ -133,10 +165,10 @@ if command -v docker >/dev/null 2>&1; then
     COMPOSE_VERSION="$(docker compose version --short 2>/dev/null)"
     log_pass "docker compose v$COMPOSE_VERSION"
   else
-    log_fail "docker compose v2 not found" "On Linux: 'sudo apt install docker-compose-plugin'. On Win/Mac it ships with Docker Desktop."
+    log_missing "$REQUIRED" "docker compose v2 not found" "On Linux: 'sudo apt install docker-compose-plugin'. On Win/Mac it ships with Docker Desktop."
   fi
 else
-  log_fail "docker not found" "Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
+  log_missing "$REQUIRED" "docker not found" "Install Docker Desktop from https://www.docker.com/products/docker-desktop/"
 fi
 
 # ---------------------------------------------------------------------------
@@ -150,10 +182,10 @@ if command -v gh >/dev/null 2>&1; then
     GH_USER="$(gh api user --jq .login 2>/dev/null || echo unknown)"
     log_pass "Authenticated to GitHub as $GH_USER"
   else
-    log_fail "gh is not authenticated" "Run 'gh auth login' and follow the prompts"
+    log_missing "$REQUIRED" "gh is not authenticated" "Run 'gh auth login' and follow the prompts"
   fi
 else
-  log_fail "gh (GitHub CLI) not found" "Install from https://cli.github.com/"
+  log_missing "$REQUIRED" "gh (GitHub CLI) not found" "Install from https://cli.github.com/"
 fi
 
 # ---------------------------------------------------------------------------
@@ -163,7 +195,7 @@ if command -v code >/dev/null 2>&1; then
   CODE_VERSION="$(code --version 2>/dev/null | head -1)"
   log_pass "VS Code $CODE_VERSION"
 else
-  log_warn "'code' command not found in PATH" "Open VS Code → Cmd/Ctrl+Shift+P → 'Shell Command: Install code command in PATH'"
+  log_missing "$RECOMMENDED" "'code' command not found in PATH" "Open VS Code → Cmd/Ctrl+Shift+P → 'Shell Command: Install code command in PATH'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -225,7 +257,7 @@ if [ "$DESIGNER_FOUND" = "strong" ]; then
 elif [ "$DESIGNER_FOUND" = "weak" ]; then
   log_info "Found $DESIGNER_WHERE but no designerlauncher config yet — launch a Designer once to confirm"
 else
-  log_warn "Ignition Designer Launcher not detected" \
+  log_missing "$RECOMMENDED" "Ignition Designer Launcher not detected" \
     "Open your gateway web page → Downloads → Designer Launcher (or it installs on first Designer launch). Detection is best-effort — ignore this if you already have it."
 fi
 
@@ -254,9 +286,9 @@ fi
 if [ -n "$FREE_GB" ] && [ "$FREE_GB" -ge 20 ] 2>/dev/null; then
   log_pass "Free disk space: ${FREE_GB} GB"
 elif [ -n "$FREE_GB" ]; then
-  log_warn "Free disk space looks low (${FREE_GB} GB)" "Recommend ≥ 20 GB free for Ignition images + Docker volumes"
+  log_missing "$RECOMMENDED" "Free disk space looks low (${FREE_GB} GB)" "Recommend ≥ 20 GB free for Ignition images + Docker volumes"
 else
-  log_warn "Could not determine free disk space" "Run 'df -h .' manually and confirm you have ≥ 20 GB free"
+  log_missing "$RECOMMENDED" "Could not determine free disk space" "Run 'df -h .' manually and confirm you have ≥ 20 GB free"
 fi
 
 # On WSL2 this measures the Linux/WSL2 filesystem, NOT the Windows C: drive.
@@ -288,9 +320,9 @@ esac
 if [ -n "$TOTAL_RAM_GB" ] && [ "$TOTAL_RAM_GB" -ge 8 ] 2>/dev/null; then
   log_pass "Total RAM: ${TOTAL_RAM_GB} GB"
 elif [ -n "$TOTAL_RAM_GB" ]; then
-  log_warn "Total RAM looks low (${TOTAL_RAM_GB} GB)" "Recommend ≥ 8 GB; Ignition + Docker can be tight below that. On WSL2, raise the limit via a .wslconfig 'memory=' setting."
+  log_missing "$RECOMMENDED" "Total RAM looks low (${TOTAL_RAM_GB} GB)" "Recommend ≥ 8 GB; Ignition + Docker can be tight below that. On WSL2, raise the limit via a .wslconfig 'memory=' setting."
 else
-  log_warn "Could not determine total RAM" "Confirm you have ≥ 8 GB available to Docker"
+  log_missing "$RECOMMENDED" "Could not determine total RAM" "Confirm you have ≥ 8 GB available to Docker"
 fi
 
 if grep -qi microsoft /proc/version 2>/dev/null; then
@@ -305,7 +337,7 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   if docker pull inductiveautomation/ignition:8.3 >/dev/null 2>&1; then
     log_pass "Pulled inductiveautomation/ignition:8.3"
   else
-    log_fail "Could not pull inductiveautomation/ignition:8.3" "Check internet connectivity and Docker Hub access; corporate firewalls sometimes block this"
+    log_missing "$REQUIRED" "Could not pull inductiveautomation/ignition:8.3" "Check internet connectivity and Docker Hub access; corporate firewalls sometimes block this"
   fi
 else
   log_warn "Skipping image pull (Docker not available)" "Fix Docker first, then re-run"
@@ -339,13 +371,13 @@ if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
     if [ $SUCCESS -eq 1 ]; then
       log_pass "Gateway responded on http://localhost:18088 (took ~$((i * 3))s to start)"
     else
-      log_fail "Gateway did not respond within 90s" "Run 'docker logs $CONTAINER_NAME' to see what went wrong, then check Discord #preflight-help"
+      log_missing "$REQUIRED" "Gateway did not respond within 90s" "Run 'docker logs $CONTAINER_NAME' to see what went wrong, then check Discord #preflight-help"
     fi
 
     # Tear down
     docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   else
-    log_fail "Could not start a gateway container" "Check that port 18088 is free and Docker has enough memory"
+    log_missing "$REQUIRED" "Could not start a gateway container" "Check that port 18088 is free and Docker has enough memory"
   fi
 fi
 

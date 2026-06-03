@@ -16,19 +16,24 @@ The script writes a report to `./preflight-report.txt`. **Paste the contents of 
 
 ## What it checks
 
-| Check | Required |
+Every check is one of two tiers:
+
+- **Required** — you cannot complete Day 1 without it. A miss is a hard failure and the script exits non-zero.
+- **Recommended** — things work without it, but the labs are rougher. A miss is only a warning and never changes the exit code.
+
+| Check | Tier |
 |---|---|
-| Operating system (and WSL2 on Windows) | ✅ |
-| `git` ≥ 2.40 | ✅ |
-| `docker` ≥ 24 | ✅ |
-| `docker compose` v2 | ✅ |
-| `gh` (GitHub CLI) and `gh auth status` | ✅ |
-| VS Code installed | ✅ |
+| Operating system (and WSL2 on Windows) | Required |
+| `git` ≥ 2.40 | Required |
+| `docker` ≥ 24 | Required |
+| `docker compose` v2 | Required |
+| `gh` (GitHub CLI) and `gh auth status` | Required |
+| VS Code installed | Recommended |
 | Ignition Designer Launcher installed (best-effort detection) | Recommended |
 | At least 20 GB free disk space | Recommended |
 | At least 8 GB total RAM | Recommended |
-| Can pull `inductiveautomation/ignition:8.3` | ✅ |
-| Can start a gateway container and hit `http://localhost:8088` | ✅ |
+| Can pull `inductiveautomation/ignition:8.3` | Required |
+| Can start a gateway container and hit `http://localhost:8088` | Required |
 
 ## If something fails
 

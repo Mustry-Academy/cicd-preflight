@@ -1,0 +1,24 @@
+name: CI
+
+# A preflight repo for a CI/CD course should practise what it preaches.
+# Lint the shell on every push/PR so the script (and its docs, see the
+# readme-in-sync job added later) can't silently rot.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  shellcheck:
+    name: Lint shell scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: bash syntax check
+        run: bash -n scripts/preflight.sh
+
+      - name: shellcheck
+        # shellcheck ships preinstalled on GitHub's ubuntu runners.
+        run: shellcheck scripts/preflight.sh

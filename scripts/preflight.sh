@@ -11,8 +11,9 @@
 # the two ever drift (see .github/workflows/ci.yml).
 
 # Checks run through dynamic dispatch ("check_$id"), which shellcheck can't trace,
-# so it wrongly reports every check_* function as never invoked. Silence that one.
-# shellcheck disable=SC2329
+# so it wrongly reports every check_* function as unreachable / never invoked.
+# Silence that across shellcheck versions: SC2317 (≤0.10) and SC2329 (≥0.10).
+# shellcheck disable=SC2317,SC2329
 
 set -u
 

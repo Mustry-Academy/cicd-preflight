@@ -21,4 +21,18 @@ jobs:
 
       - name: shellcheck
         # shellcheck ships preinstalled on GitHub's ubuntu runners.
-        run: shellcheck scripts/preflight.sh
+        run: shellcheck scripts/*.sh
+
+  readme-sync:
+    name: README table in sync with manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Regenerate the checks table from the manifest
+        run: bash scripts/update-readme.sh
+
+      - name: Fail if README.md is out of date
+        # If regenerating changed anything, the manifest and docs have drifted —
+        # the contributor needs to run scripts/update-readme.sh and commit.
+        run: git diff --exit-code README.md

@@ -46,7 +46,7 @@ The table below is generated from the `CHECKS` manifest in [`scripts/preflight.s
 | Ignition Designer Launcher installed (best-effort detection) | Recommended |
 | At least 20 GB free disk space | Recommended |
 | At least 8 GB total RAM | Recommended |
-| Can pull `inductiveautomation/ignition:8.3` | Required |
+| Can pull `inductiveautomation/ignition:8.3.6` | Required |
 | Gateway container starts and responds over HTTP | Required |
 <!-- END CHECKS TABLE -->
 

@@ -148,12 +148,12 @@ CHECKS=(
   'designer|recommended|Ignition Designer Launcher installed (best-effort detection)'
   'disk|recommended|At least 20 GB free disk space'
   'ram|recommended|At least 8 GB total RAM'
-  'image|required|Can pull `inductiveautomation/ignition:8.3`'
+  'image|required|Can pull `inductiveautomation/ignition:8.3.6`'
   'smoke|required|Gateway container starts and responds over HTTP'
 )
 
 # Settings the smoke/image checks share.
-IGNITION_IMAGE="inductiveautomation/ignition:8.3"
+IGNITION_IMAGE="inductiveautomation/ignition:8.3.6"
 SMOKE_CONTAINER="mustry-preflight-gateway"
 
 # docker_ready — Docker is installed AND its daemon answers. The image and smoke

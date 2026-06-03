@@ -10,7 +10,7 @@ You must run the preflight from inside WSL2, not from CMD or Git Bash. In Docker
 - **Linux:** `sudo systemctl start docker` (and `sudo systemctl enable docker` for auto-start)
 - **Linux, "permission denied":** add yourself to the `docker` group with `sudo usermod -aG docker $USER`, then log out and back in
 
-## "Could not pull inductiveautomation/ignition:8.3"
+## "Could not pull inductiveautomation/ignition:8.3.6"
 
 This is usually a network issue. Try:
 

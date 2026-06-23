@@ -458,7 +458,9 @@ else
       done
 
       if [ "$SMOKE_OK" -eq 1 ]; then
-        log_pass "Gateway responded on http://localhost:${SMOKE_HOST_PORT} (took ~$((i * 3))s to start)"
+        # Each 3s sleep runs only after a failed probe, so on success at
+        # iteration i exactly (i-1) sleeps have elapsed — not i.
+        log_pass "Gateway responded on http://localhost:${SMOKE_HOST_PORT} (took ~$(((i - 1) * 3))s to start)"
       else
         log_missing "$REQUIRED" "Gateway did not respond within 90s" "Run 'docker logs $SMOKE_CONTAINER' to see what went wrong, then check Discord #preflight-help"
       fi

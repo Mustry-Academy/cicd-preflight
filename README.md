@@ -7,10 +7,15 @@ The preflight script checks that you have all the tools required for the masterc
 ## Quick start
 
 ```bash
+mkdir -p ~/mustry-academy && cd ~/mustry-academy     # Windows: this must be your LINUX home
 git clone https://github.com/mustry-academy/cicd-preflight.git
 cd cicd-preflight
 ./scripts/preflight.sh
 ```
+
+> **Windows:** run this inside WSL, and keep every course repo in your Linux home
+> (`~/…`), never on your Windows drive (`/mnt/c/…`). The script fails if you are on
+> `/mnt/c` — see [Platform notes](#platform-notes) for why.
 
 The script writes a report to `./preflight-report.txt`. **Paste the contents of that file into the Discord `#preflight-help` channel** so the TA can confirm you're ready or help debug.
 
@@ -37,6 +42,8 @@ Every check is one of two tiers:
 | Check | Tier |
 |---|---|
 | Operating system (and WSL2 on Windows) | Required |
+| Working directory is on the Linux filesystem, not `/mnt/c` (WSL only) | Required |
+| Not running as root / under `sudo` | Required |
 | `git` ≥ 2.40 | Required |
 | `docker` ≥ 24, daemon running, and `docker compose` v2 | Required |
 | `gh` (GitHub CLI) installed and authenticated | Required |
@@ -56,7 +63,7 @@ Every check is one of two tiers:
 
 ## Platform notes
 
-- **Windows:** you must use **WSL2 with Docker Desktop's WSL2 backend**. Run the preflight script from inside Ubuntu (or your WSL distro of choice). Native Windows / Git Bash setups are not supported. Note that the **disk space and RAM figures are measured inside WSL2, not for your whole Windows machine** — that's deliberate, since Docker images, volumes and containers live in WSL2. The RAM number is the WSL2 VM's allocation (configurable in `C:\Users\<you>\.wslconfig`).
+- **Windows:** you must use **WSL2 with Docker Desktop's WSL2 backend**. Run the preflight script from inside Ubuntu (or your WSL distro of choice). Native Windows / Git Bash setups are not supported. **Keep all course repos in your Linux home (`~/…`), never under `/mnt/c/…`.** A repo on the Windows drive is governed by Windows ACLs rather than your WSL user, so your Windows user, your WSL user and the gateway container's user are three different identities: `chown` and `chmod` do not stick, Docker bind mounts lose permission bits, and the only thing that seems to help is running WSL as a Windows administrator — which hides the problem and makes every later lab worse. The lab setup scripts refuse to run from there, and none of them ever need `sudo`. Note that the **disk space and RAM figures are measured inside WSL2, not for your whole Windows machine** — that's deliberate, since Docker images, volumes and containers live in WSL2. The RAM number is the WSL2 VM's allocation (configurable in `C:\Users\<you>\.wslconfig`).
 - **macOS:** Apple Silicon is fully supported. Ignition publishes `linux/arm64` images.
 - **Linux:** Docker Engine + Docker Compose v2. The smoothest experience.
 

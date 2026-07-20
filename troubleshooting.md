@@ -1,5 +1,50 @@
 # Troubleshooting the preflight
 
+## "You are working on the Windows filesystem"
+
+Your repo is somewhere under `/mnt/c/…` (or another Windows drive). Move it to your
+Linux home and clone again there:
+
+```bash
+mkdir -p ~/mustry-academy && cd ~/mustry-academy
+git clone https://github.com/mustry-academy/cicd-preflight.git
+cd cicd-preflight
+./scripts/preflight.sh
+```
+
+Check where you are at any time with `pwd` — it must **not** start with `/mnt/`.
+Open the folder in VS Code from there with `code .`, which keeps the WSL connection.
+
+**Why this is a hard failure, not a style preference.** On the Windows drive, file
+ownership is decided by Windows ACLs rather than your WSL user. Your Windows user,
+your WSL user and the Ignition container's user are three different identities, so
+`chown`/`chmod` appear to succeed but do not stick, and Docker bind mounts lose
+permission bits. You then hit "permission denied" on your own project files, reach
+for `sudo`, and `sudo` leaves root-owned files that cause the *next* error. Running
+WSL as a Windows administrator appears to fix it, but it only sidesteps the ACL and
+makes each later lab worse. Working from the Linux side avoids all of it. The lab
+setup scripts refuse to run from `/mnt/c` for this reason.
+
+## "This script is running under sudo"
+
+Run it as yourself, without `sudo`:
+
+```bash
+./scripts/preflight.sh
+```
+
+Nothing in this course needs root. Every file created under `sudo` is owned by root,
+which is exactly what causes the permission errors `sudo` appears to solve. The only
+legitimate uses of `sudo` are installing packages (`sudo apt install …`) and the
+one-off repairs the lab setup scripts explicitly ask permission for.
+
+If an earlier `sudo` run already left root-owned files behind, hand them back to
+yourself:
+
+```bash
+sudo chown -R "$(id -u):$(id -g)" ~/mustry-academy
+```
+
 ## Windows: "docker not found" or it works in CMD but not WSL
 
 You must run the preflight from inside WSL2, not from CMD or Git Bash. In Docker Desktop → Settings → Resources → WSL Integration, enable integration for your WSL distro (typically Ubuntu).

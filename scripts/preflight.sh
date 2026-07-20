@@ -227,6 +227,45 @@ case "$OS" in
     ;;
 esac
 
+# --- Where you are working (required on WSL) -------------------------------
+# The single biggest source of lost time in the labs. On WSL, a repo under
+# /mnt/c (a DrvFs mount of the Windows disk) is governed by Windows ACLs, not
+# by your WSL user. Your Windows user, your WSL user and the gateway
+# container's user are three different identities there, so chown/chmod do not
+# stick, Docker bind mounts lose permission bits, and the only thing that
+# appears to work is running WSL as a Windows administrator. That hides the
+# problem and makes each later lab worse. The lab setup scripts refuse to run
+# from these paths, so catch it here — days before Day 1, not during Lab 02.
+if is_wsl; then
+  section "Working directory"
+  FS_TYPE="$(stat -f -c %T . 2>/dev/null || echo unknown)"
+  case "$FS_TYPE:$PWD" in
+    drvfs:*|9p:*|v9fs:*|cifs:*|*:/mnt/[a-z]/*)
+      log_fail "You are working on the Windows filesystem ($PWD)" \
+        "Move your repos to your Linux home and re-run: mkdir -p ~/mustry-academy && cd ~/mustry-academy, then clone again there. Windows-drive paths break file ownership in ways chown cannot fix."
+      ;;
+    *)
+      log_pass "Working on the Linux filesystem ($PWD)"
+      ;;
+  esac
+fi
+
+# --- Not running as root (required) ----------------------------------------
+# Running the labs with sudo makes every file it creates root-owned, which is
+# what causes the permission errors sudo appears to solve. The lab scripts
+# refuse to run under sudo; teach the habit here.
+if [ "$(id -u)" = "0" ]; then
+  if [ -n "${SUDO_USER:-}" ]; then
+    log_fail "This script is running under sudo" \
+      "Run it as yourself: ./scripts/preflight.sh — the labs never need sudo, and running as root leaves root-owned files behind that break later steps."
+  else
+    log_warn "Running as the root user" \
+      "Use a normal user account for the labs. Files created as root cause permission errors you would then need sudo to work around."
+  fi
+else
+  log_pass "Running as a normal user (not root)"
+fi
+
 # --- Git (required) --------------------------------------------------------
 section "Git"
 if command -v git >/dev/null 2>&1; then

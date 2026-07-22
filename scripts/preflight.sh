@@ -139,6 +139,17 @@ smoke_cleanup() {
   docker rm -f "$SMOKE_CONTAINER" >/dev/null 2>&1 || true
 }
 
+# smoke_capture_logs — append the container's recent log lines to the report.
+# Must run before smoke_cleanup on failure paths: once the container is gone,
+# telling the user to run `docker logs` themselves can't work.
+smoke_capture_logs() {
+  {
+    echo "  --- last log lines from $SMOKE_CONTAINER ---"
+    docker logs --tail 20 "$SMOKE_CONTAINER" 2>&1 | sed 's/^/  /'
+    echo "  --- end of logs ---"
+  } >> "$REPORT_FILE" 2>/dev/null || true
+}
+
 # mark_launcher_found DIR — used by the Designer check. A designerlauncher* file
 # inside DIR means the launcher has actually been configured ("strong"); a bare
 # dir is a weaker hint ("weak"). Updates the DESIGNER_* globals.
@@ -481,9 +492,18 @@ else
        -e GATEWAY_ADMIN_PASSWORD=preflight \
        "$IGNITION_IMAGE" >/dev/null 2>&1; then
     # docker port -> e.g. "0.0.0.0:54321"; take the trailing port number.
-    SMOKE_HOST_PORT="$(docker port "$SMOKE_CONTAINER" 8088/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')"
+    # On Docker Desktop the dynamically assigned mapping can take a moment to
+    # become visible after `docker run -d` returns, so poll instead of reading
+    # it once — a single immediate read intermittently comes back empty.
+    SMOKE_HOST_PORT=""
+    for i in $(seq 1 10); do
+      SMOKE_HOST_PORT="$(docker port "$SMOKE_CONTAINER" 8088/tcp 2>/dev/null | head -1 | awk -F: '{print $NF}')"
+      [ -n "$SMOKE_HOST_PORT" ] && break
+      sleep 1
+    done
     if [ -z "$SMOKE_HOST_PORT" ]; then
-      log_missing "$REQUIRED" "Could not determine the gateway's published port" "Run 'docker port $SMOKE_CONTAINER' to inspect, then check Discord #preflight-help"
+      log_missing "$REQUIRED" "Could not determine the gateway's published port (waited 10s)" "The container's last log lines are in $REPORT_FILE — paste the report into Discord #preflight-help"
+      smoke_capture_logs
       smoke_cleanup
     else
       # Wait up to 90s for the gateway to come up
@@ -501,12 +521,14 @@ else
         # iteration i exactly (i-1) sleeps have elapsed — not i.
         log_pass "Gateway responded on http://localhost:${SMOKE_HOST_PORT} (took ~$(((i - 1) * 3))s to start)"
       else
-        log_missing "$REQUIRED" "Gateway did not respond within 90s" "Run 'docker logs $SMOKE_CONTAINER' to see what went wrong, then check Discord #preflight-help"
+        log_missing "$REQUIRED" "Gateway did not respond within 90s" "The container's last log lines are in $REPORT_FILE — paste the report into Discord #preflight-help"
+        smoke_capture_logs
       fi
       smoke_cleanup
     fi
   else
-    log_missing "$REQUIRED" "Could not start a gateway container" "Ensure Docker has enough memory; see 'docker logs $SMOKE_CONTAINER' if it was created"
+    log_missing "$REQUIRED" "Could not start a gateway container" "Ensure Docker has enough memory; any container logs were appended to $REPORT_FILE"
+    smoke_capture_logs
   fi
 fi
 

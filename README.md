@@ -51,6 +51,7 @@ Every check is one of two tiers:
 | Ignition Designer Launcher installed (best-effort detection) | Recommended |
 | At least 20 GB free disk space | Recommended |
 | At least 8 GB total RAM | Recommended |
+| Containers can reach GitHub over HTTPS (detects corporate TLS interception) | Required |
 | Can pull `inductiveautomation/ignition:8.3.6` | Required |
 | Gateway container starts and responds over HTTP | Required |
 

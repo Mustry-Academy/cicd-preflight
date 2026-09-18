@@ -66,6 +66,142 @@ docker pull hello-world
 
 If those fail too, you're behind a corporate proxy. Configure Docker Desktop's proxy settings in Settings → Resources → Proxies, or set `HTTPS_PROXY` in your shell. If only the Ignition pull fails, your firewall is filtering Docker Hub content — talk to your IT team.
 
+## "TLS interception detected" (corporate certificate)
+
+**TL;DR** — your company's proxy re-signs HTTPS traffic. Export its root certificate to
+`~/corp-root.crt`, re-run the preflight (it turns green), and in Lab 06 and the capstone add
+the small compose override from step 3 so the GitHub Actions runner trusts it too.
+
+### What's going on
+
+Your company runs a proxy (Zscaler, Netskope, Palo Alto GlobalProtect, Cisco Umbrella,
+Fortinet, …) that decrypts and re-signs HTTPS traffic. IT pushed the proxy's root
+certificate to your operating system, so your browser, `git`, `gh` and even `docker pull`
+all work — but a **container** only trusts the CA bundle baked into its image, so anything
+that makes an HTTPS call from inside a container fails with
+`unable to get local issuer certificate` or `The SSL connection could not be established`.
+
+That matters because the labs run the GitHub Actions runner as a container. Without the
+fix, the runner never registers with GitHub and the container restart-loops — usually
+discovered on Day 3 when there's no time to sort it out. The preflight's report line tells
+you who signed the certificate the container saw (`issuer: …`); if that's your company or
+proxy vendor rather than Sectigo/DigiCert, this is the section for you.
+
+### 1. Export the proxy's root certificate
+
+Ask IT for the root CA as a `.crt`/`.pem` file if you can — that's the fastest route.
+Otherwise export it yourself. You're looking for the certificate named in the `issuer:` part
+of your preflight report (or the one above it in the chain — export the topmost, self-signed
+one):
+
+- **Windows:** `Win+R` → `certmgr.msc` (or `certlm.msc` if it isn't there — IT usually
+  installs into the machine store) → *Trusted Root Certification Authorities* →
+  *Certificates* → find the entry → right-click → *All Tasks* → *Export…* →
+  **Base-64 encoded X.509 (.CER)**. Save it, then copy it into WSL:
+
+  ```bash
+  cp /mnt/c/Users/<you>/Downloads/corp-root.cer ~/corp-root.crt
+  ```
+
+- **macOS:** open *Keychain Access* → *System* keychain → *Certificates* → find the entry →
+  *File* → *Export Items…* → format **Privacy Enhanced Mail (.pem)** → save as `~/corp-root.crt`
+- **Linux:** it's usually already under `/usr/local/share/ca-certificates/` or
+  `/etc/pki/ca-trust/source/anchors/`; copy it to `~/corp-root.crt`.
+
+The file must be PEM — it should start with `-----BEGIN CERTIFICATE-----`. If it's binary
+(DER), convert it:
+
+```bash
+openssl x509 -inform der -in corp-root.cer -out ~/corp-root.crt
+```
+
+### 2. Re-run the preflight
+
+```bash
+./scripts/preflight.sh --no-pull --skip-smoke
+```
+
+The script notices `~/corp-root.crt`, probes GitHub again trusting it, and reports
+`Containers can reach GitHub over HTTPS using your corporate CA`. If it instead says the
+file *"exists but does not make … verify"*, you exported the wrong certificate (an
+intermediate, or something unrelated) or it isn't PEM — go back to step 1 and pick the
+certificate named as `issuer:`, or the root above it.
+
+Keep `~/corp-root.crt` exactly there: step 3 relies on it.
+
+### 3. Make the labs use it
+
+The only containers in the course that talk to GitHub are the self-hosted runners in
+**Lab 06** and the **capstone (Lab 07)**. Everything else — `git`, `gh`, `docker pull`, the
+Ignition gateways — works already. So the fix is: get the certificate into the runner
+container before it registers.
+
+Create a file called `docker-compose.corp-ca.yaml` next to the lab's `docker-compose.yaml`
+(same content for both labs — it's generic and safe to commit; the certificate itself stays
+in your home directory):
+
+```yaml
+# Opt-in override for laptops behind a TLS-intercepting corporate proxy.
+services:
+  github-runner:
+    volumes:
+      # Where update-ca-certificates picks it up. Must end in .crt.
+      - ${CORP_CA_FILE:-~/corp-root.crt}:/usr/local/share/ca-certificates/corp-root.crt:ro
+    environment:
+      # JavaScript actions (actions/checkout etc.) run under the runner's own
+      # bundled node, which ignores the system store and needs this pointer.
+      NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/corp-root.crt
+    # Rebuild the system CA bundle from the mounted cert, then hand over to the
+    # image's own entrypoint. Overriding entrypoint clears the image's CMD, so
+    # it is restated below. ($$@ is compose's escape for a literal $@.)
+    entrypoint: ["/bin/bash", "-c", "update-ca-certificates >/dev/null 2>&1 && exec /entrypoint.sh \"$$@\"", "--"]
+    command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]
+```
+
+Then tell compose to layer it on top of the lab's file by adding one line to the lab's `.env`:
+
+```bash
+COMPOSE_FILE=docker-compose.yaml:docker-compose.corp-ca.yaml
+```
+
+From then on every plain `docker compose up -d` in that lab includes the override — the lab
+scripts don't need to know. Verify with:
+
+```bash
+docker compose up -d github-runner
+docker compose logs github-runner | head -20
+```
+
+You should see the GitHub Actions banner and `Runner successfully added`, not an SSL error.
+
+What this covers inside the runner: `Runner.Listener` (registration, job polling), `git`
+and `curl`/`gh` in your workflow steps (system CA bundle), and JavaScript actions such as
+`actions/checkout` (`NODE_EXTRA_CA_CERTS`). Workflow steps that use `docker` talk to the
+host's daemon over the mounted socket, so they already trust the proxy like the host does.
+
+### 4. If you can't export the certificate
+
+Some IT departments won't hand it over. Options, in order of preference:
+
+1. Ask IT to **exempt `*.github.com` and `*.githubusercontent.com` from inspection**
+   (a common allow-list request; GitHub publishes the [full list of hosts](https://docs.github.com/en/actions/hosting-your-own-runners/managing-self-hosted-runners/about-self-hosted-runners#communication-between-self-hosted-runners-and-github)).
+2. Run the labs off the corporate network (home Wi-Fi, phone hotspot) for the days the
+   runner is used.
+3. Post in `#preflight-help` — the TA can walk through it with you before Day 1.
+
+## "Containers cannot reach GitHub" (although this machine can)
+
+The host reaches GitHub but a container doesn't, and the failure is *not* a certificate
+error (typically a timeout or connection refused). Docker's network isn't getting through
+your proxy or firewall:
+
+- **Docker Desktop:** Settings → Resources → Proxies → *Manual proxy configuration*, enter the
+  same proxy your browser uses, then *Apply & restart*.
+- **Linux:** put `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` in `~/.docker/config.json` under
+  `"proxies": {"default": {…}}` so they're passed into every container.
+- **Corporate VPN clients** sometimes block container traffic entirely; try disconnecting the
+  VPN and re-running the preflight to confirm.
+
 ## "Gateway did not respond within 90s"
 
 Two common causes (the preflight publishes the gateway on a Docker-assigned free port, so a busy port is no longer one of them):

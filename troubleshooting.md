@@ -55,9 +55,10 @@ You must run the preflight from inside WSL2, not from CMD or Git Bash. In Docker
 - **Linux:** `sudo systemctl start docker` (and `sudo systemctl enable docker` for auto-start)
 - **Linux, "permission denied":** add yourself to the `docker` group with `sudo usermod -aG docker $USER`, then log out and back in
 
-## "Could not pull inductiveautomation/ignition:8.3.6"
+## "Could not pull …" (course images)
 
-This is usually a network issue. Try:
+The preflight pulls every image the labs use so the multi-GB download happens now, not over
+classroom Wi-Fi. If **all** of them fail, it's a network issue. Try:
 
 ```bash
 curl -I https://hub.docker.com
@@ -65,6 +66,117 @@ docker pull hello-world
 ```
 
 If those fail too, you're behind a corporate proxy. Configure Docker Desktop's proxy settings in Settings → Resources → Proxies, or set `HTTPS_PROXY` in your shell. If only the Ignition pull fails, your firewall is filtering Docker Hub content — talk to your IT team.
+
+If **some** images pulled and later ones failed with `toomanyrequests`, you hit Docker Hub's
+anonymous rate limit — see the next section.
+
+## "Not logged in to Docker Hub"
+
+A **warning, not a failure** — but one worth fixing. Docker Hub limits anonymous pulls **per IP
+address**, and on course days the whole room sits behind one NAT address, so twenty people pulling
+at once get throttled together. A free account raises the limit and makes it per-account:
+
+1. Create a free account at [hub.docker.com](https://hub.docker.com/)
+2. `docker login` (inside WSL on Windows)
+
+The preflight pre-pulls every image anyway, so as long as you don't `docker system prune` before
+the course you're unlikely to hit the limit — the login is the belt to go with those braces.
+
+## "Memory available to Docker: N GB"
+
+A **warning, not a failure**, but labs 04–06 run three Ignition gateways (1 GB heap each) plus
+TimescaleDB and the runner, and get OOM-killed below ~8 GB. This is Docker's *own* allocation,
+which is separate from the RAM check:
+
+- **macOS:** Docker Desktop → Settings → Resources → Memory → 8 GB or more → Apply & restart.
+  (OrbStack users: it grows dynamically, no setting needed.)
+- **Windows:** Docker uses the WSL2 VM's memory. Create or edit `C:\Users\<you>\.wslconfig`:
+
+  ```ini
+  [wsl2]
+  memory=12GB
+  ```
+
+  then `wsl --shutdown` in PowerShell and restart Docker Desktop.
+- **Linux:** Docker uses host memory directly; this is your machine's RAM.
+
+## "git has no commit identity"
+
+Lab 01 starts with a commit, and git refuses without knowing who you are:
+
+```bash
+git config --global user.name "Your Name"
+git config --global user.email "you@example.com"
+```
+
+Use the email attached to your GitHub account so commits are attributed to you on GitHub.
+
+## "python3 … is too old" or "cannot create a virtual environment"
+
+Lab 02–07 scripts use `python3`, and Lab 03 installs its linters (`ign-lint`, `yamllint`) into a
+virtual environment; `ign-lint` needs Python 3.10+.
+
+- **Ubuntu / WSL:** the venv module is a separate package — `sudo apt install python3-venv`.
+  Ubuntu 22.04+ ships Python 3.10+; on 20.04, `sudo apt install python3.11 python3.11-venv`.
+- **macOS:** the system `/usr/bin/python3` is often 3.9. Install a current one with
+  `brew install python`, then open a new terminal so `python3` resolves to Homebrew's.
+- **Linux (other):** any 3.10+ from your package manager, plus its venv package if split out.
+
+## "gh token is missing scope(s)"
+
+`gh` is logged in, but its token can't do everything the labs need. Lab 03 pushes files under
+`.github/workflows/`, and GitHub rejects that over HTTPS unless the token has the `workflow` scope
+— with an unhelpful *"refusing to allow an OAuth App to create or update workflow"*. Add the
+scopes to your existing login:
+
+```bash
+gh auth refresh -h github.com -s repo,workflow
+```
+
+## "git has no way to authenticate to GitHub"
+
+`gh auth login` logs in the **GitHub CLI**; plain `git push` is a separate path and GitHub no
+longer accepts passwords for it. Either let git reuse gh's token (simplest):
+
+```bash
+gh auth setup-git
+```
+
+or use SSH: `gh auth login` again, choose **SSH** and let it generate and upload a key, then clone
+your forks with the `git@github.com:` URLs.
+
+Two **warning** variants of this check:
+
+- *"An SSH key exists but did not authenticate to GitHub non-interactively"* — usually a key
+  with a passphrase and no `ssh-agent` running (WSL doesn't start one). Test with
+  `ssh -T git@github.com`: if it asks for the passphrase and then greets you by name, you're
+  fine. If it says *Permission denied (publickey)*, the key isn't on your GitHub account —
+  `gh auth login` → SSH will upload it.
+- *"git uses credential helper '…'"* — some other helper (Git Credential Manager, osxkeychain)
+  is configured and may well hold a valid token; if a push asks for a password, run
+  `gh auth setup-git`.
+
+## "Port(s) already in use"
+
+The lab compose files publish fixed ports — 8088–8090 and 8060–8062 for the gateways, 5432 for
+TimescaleDB — and `docker compose up` fails if anything else holds one. The preflight names the
+owner where it can:
+
+- **`container …`** — a lab (or other) stack you left running. `docker compose down` in that
+  project, or `docker stop <name>`.
+- **A local Ignition install** — its "Ignition Gateway" service starts at boot on 8088. Stop and
+  disable the service (Windows: Services → *Ignition Gateway* → Stop, Startup type *Manual*;
+  macOS/Linux: `sudo /usr/local/ignition/ignition.sh stop` and remove it from startup) or
+  uninstall it — the course runs gateways in Docker only.
+- **A local PostgreSQL** on 5432 — stop the service for the course days, or uninstall.
+- **On WSL2, "could not tell which"** — the owner is a Windows program the Linux side can't see.
+  In PowerShell: `netstat -ano | findstr :8088` shows the PID, then Task Manager → Details.
+
+## "A local Ignition gateway install was found"
+
+A **warning, not a failure**, raised even when 8088 is currently free: the installed gateway's
+service starts at boot and will take 8088 the next time you restart. See the port section above
+for how to stop and disable it.
 
 ## "TLS interception detected" (corporate certificate)
 

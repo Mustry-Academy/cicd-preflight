@@ -86,14 +86,14 @@ section() {
 #
 #   required     You cannot complete Day 1 without it. A miss is a hard FAILURE
 #                and the script exits non-zero, so CI and the TA can gate on it.
-#                  → OS, git (+identity), python, docker, gh (+scopes, push
-#                    auth), container HTTPS, host ports, course images,
-#                    gateway smoke test
+#                  → OS, git (+identity, line endings), curl, clock, python,
+#                    docker, gh (+scopes, push auth), container HTTPS, host
+#                    ports, course images, bind mounts, gateway smoke test
 #
 #   recommended  Things work without it, but the labs are rougher. A miss is a
 #                WARNING only and never changes the exit code.
-#                  → VS Code, Designer Launcher, disk, RAM, Docker memory,
-#                    Docker Hub login, local Ignition install
+#                  → VS Code, Designer Launcher, disk, RAM, Docker memory/CPUs,
+#                    Docker Hub login, local Ignition install, jq, openssl
 #
 # Soft sub-conditions can still downgrade: Docker is *required*, but "Docker is
 # installed yet below the recommended version" is only a warning, because an old
@@ -165,8 +165,10 @@ smoke_capture_logs() {
 # certificate". Nothing else in this script would catch that, so we probe from
 # a throwaway curl container. The image is pinned for reproducibility.
 CURL_IMAGE="curlimages/curl:8.14.1"
-# Hosts the runner needs: registration + API, checkout, and the job long-poll.
-GITHUB_HOSTS="api.github.com github.com pipelines.actions.githubusercontent.com"
+# Hosts the runner needs (registration + API, checkout, the job long-poll) plus
+# GHCR, where Lab 05 publishes and pulls its images. Proxies allow-list these
+# separately, so each is probed on its own.
+GITHUB_HOSTS="api.github.com github.com pipelines.actions.githubusercontent.com ghcr.io pkg-containers.githubusercontent.com"
 
 # container_https_probe HOST — GET https://HOST/ from inside a container.
 # Returns curl's own exit status; any HTTP response (even a 404) counts as
@@ -262,6 +264,24 @@ ssh_github_ok() {
   ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
       git@github.com 2>&1 | grep -q 'successfully authenticated'
 }
+
+# github_clock_skew — seconds between this machine's clock and GitHub's Date
+# header (absolute value), or empty if it couldn't be measured. GNU date and
+# BSD date parse RFC 1123 differently, hence the two attempts.
+github_clock_skew() {
+  local hdr remote local_now
+  hdr="$(curl -sI --max-time 15 https://api.github.com/ 2>/dev/null | sed -n 's/^[Dd]ate: *//p' | tr -d '\r' | head -1)"
+  [ -n "$hdr" ] || return 0
+  remote="$(date -u -d "$hdr" +%s 2>/dev/null || date -u -j -f '%a, %d %b %Y %T %Z' "$hdr" +%s 2>/dev/null)" || true
+  [ -n "$remote" ] || return 0
+  local_now="$(date -u +%s)"
+  echo $(( local_now > remote ? local_now - remote : remote - local_now ))
+}
+
+# BIND_MOUNT_DIR — a scratch dir under the working directory (same filesystem
+# the labs live on) that the bind-mount check hands to the gateway image.
+BIND_MOUNT_DIR="$(pwd)/.preflight-bind-mount"
+bind_mount_cleanup() { rm -rf "$BIND_MOUNT_DIR"; }
 
 # port_owner PORT — best-effort name of what holds PORT, for the report. A
 # running container of the student's own is the most common answer (a lab
@@ -427,8 +447,52 @@ if command -v git >/dev/null 2>&1; then
   else
     log_missing "$REQUIRED" "git has no commit identity (user.name / user.email)" "Run: git config --global user.name \"Your Name\" && git config --global user.email \"you@example.com\""
   fi
+
+  # core.autocrlf=true is a Git-for-Windows habit that follows people into
+  # WSL. It rewrites every checked-out file with CRLF, and the labs' shell
+  # scripts then die with "bash\r: No such file or directory".
+  if [ "$(git config --get core.autocrlf 2>/dev/null | tr '[:upper:]' '[:lower:]')" = "true" ]; then
+    log_missing "$REQUIRED" "core.autocrlf is 'true' — checkouts get Windows line endings and the lab scripts won't run" "Run: git config --global core.autocrlf input — then re-clone any lab repo you already cloned"
+  else
+    log_pass "Line endings left alone (core.autocrlf not 'true')"
+  fi
 else
   log_missing "$REQUIRED" "git not found" "Install Git from https://git-scm.com/"
+fi
+
+# --- Command-line tools ----------------------------------------------------
+# The lab scripts shell out to these. curl is everywhere (health probes,
+# gateway API calls) so it's required; jq and openssl are used but guarded.
+section "Command-line tools"
+if command -v curl >/dev/null 2>&1; then
+  log_pass "curl $(curl --version 2>/dev/null | head -1 | awk '{print $2}')"
+else
+  log_missing "$REQUIRED" "curl not found" "Ubuntu/WSL: sudo apt install curl. macOS ships it."
+fi
+for tool in jq openssl; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    log_pass "$tool found"
+  else
+    log_missing "$RECOMMENDED" "$tool not found" "Ubuntu/WSL: sudo apt install $tool. macOS: brew install $tool. The lab scripts work without it but print less helpful output"
+  fi
+done
+
+# --- Clock (required) ------------------------------------------------------
+# A clock that's off breaks TLS, gh logins and the short-lived tokens Docker
+# registries hand out. WSL2 is the usual offender: its clock drifts after the
+# laptop sleeps or hibernates.
+section "Clock"
+if command -v curl >/dev/null 2>&1; then
+  CLOCK_SKEW="$(github_clock_skew)"
+  if [ -z "$CLOCK_SKEW" ]; then
+    log_info "Could not compare the clock with GitHub (offline?) — skipping"
+  elif [ "$CLOCK_SKEW" -le 300 ]; then
+    log_pass "Clock is within ${CLOCK_SKEW}s of GitHub's"
+  else
+    log_missing "$REQUIRED" "Clock is off by ${CLOCK_SKEW}s compared to GitHub" "WSL2: run 'wsl --shutdown' in PowerShell and reopen (or 'sudo hwclock -s'). Otherwise enable automatic time in your OS settings"
+  fi
+else
+  log_info "Skipping clock check (curl not found)"
 fi
 
 # --- Python (required) -----------------------------------------------------
@@ -482,11 +546,23 @@ if command -v docker >/dev/null 2>&1; then
       log_missing "$RECOMMENDED" "Memory available to Docker: ${DOCKER_MEM_GB} GB (labs 04–06 need ≥ 8 GB)" "Docker Desktop → Settings → Resources → Memory. On WSL2: raise memory= in C:\\Users\\<you>\\.wslconfig, then 'wsl --shutdown'"
     fi
 
+    DOCKER_CPUS="$(docker info --format '{{.NCPU}}' 2>/dev/null || echo 0)"
+    if [ "${DOCKER_CPUS:-0}" -ge 4 ] 2>/dev/null; then
+      log_pass "CPUs available to Docker: $DOCKER_CPUS"
+    elif [ "${DOCKER_CPUS:-0}" -gt 0 ] 2>/dev/null; then
+      log_missing "$RECOMMENDED" "CPUs available to Docker: $DOCKER_CPUS (labs 04–06 run three gateways + a database; ≥ 4 recommended)" "Docker Desktop → Settings → Resources → CPUs. On WSL2: processors= in .wslconfig"
+    fi
+
     if docker_hub_logged_in; then
       log_pass "Logged in to Docker Hub"
     else
       log_missing "$RECOMMENDED" "Not logged in to Docker Hub" "Anonymous pulls are rate-limited per IP address and the whole classroom shares one. Create a free account at hub.docker.com and run 'docker login'"
     fi
+  elif [ -S /var/run/docker.sock ] && [ ! -w /var/run/docker.sock ]; then
+    # Linux: the daemon is up, this user just isn't allowed to talk to it.
+    # Without this branch it reads as "daemon not running" and people reach
+    # for sudo, which the course explicitly doesn't want.
+    log_missing "$REQUIRED" "Docker is running but your user may not use it (no permission on /var/run/docker.sock)" "Run: sudo usermod -aG docker \$USER — then log out and back in (or 'newgrp docker')"
   else
     log_missing "$REQUIRED" "Docker daemon is not running" "Start Docker Desktop (Win/Mac) or run 'sudo systemctl start docker' (Linux)"
   fi
@@ -834,6 +910,32 @@ else
   fi
 fi
 
+# --- Bind mounts (required) ------------------------------------------------
+# Every lab bind-mounts ./projects and ./services/config into the gateway,
+# and the Ignition image runs as uid 2003. Docker Desktop on macOS/Windows
+# maps that to you transparently; native Linux and WSL2 bind mounts keep real
+# permissions, so a directory you own with mode 755 is read-only to the
+# gateway and the Designer can't save a project. SELinux (Fedora) blocks it
+# too. Test the real thing: the real image, a real mount from this directory.
+section "Bind mounts"
+if ! docker_ready; then
+  log_warn "Skipping bind-mount check (Docker not available)" "Fix Docker first, then re-run"
+elif ! docker image inspect "$IGNITION_IMAGE" >/dev/null 2>&1; then
+  log_warn "Skipping bind-mount check ($IGNITION_IMAGE not available)" "Re-run once the image pull passes"
+else
+  bind_mount_cleanup
+  trap 'bind_mount_cleanup' EXIT
+  if mkdir -p "$BIND_MOUNT_DIR" 2>/dev/null \
+     && docker run --rm -v "$BIND_MOUNT_DIR:/preflight-mount" --entrypoint sh "$IGNITION_IMAGE" \
+          -c 'touch /preflight-mount/.written' >/dev/null 2>&1 \
+     && [ -e "$BIND_MOUNT_DIR/.written" ]; then
+    log_pass "The gateway container (uid 2003) can write to a directory mounted from here"
+  else
+    log_missing "$REQUIRED" "The gateway container (uid 2003) cannot write to a directory mounted from $(pwd)" "On Linux/WSL2 the lab's ./projects and ./services/config need to be writable by uid 2003 — see troubleshooting.md → 'The gateway container cannot write to a directory mounted from here'"
+  fi
+  bind_mount_cleanup
+fi
+
 # --- Gateway smoke test (required) -----------------------------------------
 section "Gateway smoke test"
 if [ "$SKIP_SMOKE" -eq 1 ]; then
@@ -844,8 +946,8 @@ else
   # Clean up any previous run, and make sure an interrupt mid-wait tears the
   # container down too (--rm alone only fires on the container's own exit).
   smoke_cleanup
-  trap 'smoke_cleanup' EXIT
-  trap 'smoke_cleanup; exit 130' INT TERM
+  trap 'smoke_cleanup; bind_mount_cleanup' EXIT
+  trap 'smoke_cleanup; bind_mount_cleanup; exit 130' INT TERM
 
   # Publish the gateway's 8088 to a Docker-assigned ephemeral host port, so a
   # busy host port can't fail the test. We then ask Docker which port it picked.

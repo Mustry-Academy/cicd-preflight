@@ -55,6 +55,58 @@ You must run the preflight from inside WSL2, not from CMD or Git Bash. In Docker
 - **Linux:** `sudo systemctl start docker` (and `sudo systemctl enable docker` for auto-start)
 - **Linux, "permission denied":** add yourself to the `docker` group with `sudo usermod -aG docker $USER`, then log out and back in
 
+## "core.autocrlf is 'true'"
+
+Git for Windows sets `core.autocrlf=true` so files get Windows line endings on checkout. That
+setting sometimes gets copied into WSL (or set globally on a Mac from an old tutorial), and then
+every lab `.sh` script fails with `bash\r: No such file or directory` or `$'\r': command not
+found`. Turn it off and re-clone anything you already cloned:
+
+```bash
+git config --global core.autocrlf input
+```
+
+If you can't re-clone, `git config core.autocrlf input && git rm --cached -r . && git reset --hard`
+inside the affected repo rewrites the checkout.
+
+## "Clock is off by Ns compared to GitHub"
+
+TLS certificates, `gh` logins and the short-lived tokens Docker registries hand out all assume
+your clock is roughly right. **WSL2 is the usual cause** — its clock stops while the laptop sleeps
+or hibernates and doesn't always catch up. In PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+then reopen your WSL terminal. (Inside WSL, `sudo hwclock -s` also resyncs from the Windows
+clock.) On macOS/Linux, turn on automatic time in your OS settings.
+
+## "Docker is running but your user may not use it"
+
+Linux only: the daemon is up but your account isn't in the `docker` group, so every `docker`
+command needs `sudo` — which the lab scripts deliberately never use.
+
+```bash
+sudo usermod -aG docker $USER
+```
+
+Then log out and back in (or run `newgrp docker` in the current shell) and re-run the preflight.
+
+## "curl / jq / openssl not found"
+
+`curl` is required (the lab scripts use it to talk to the gateway API); `jq` and `openssl` are
+used but the scripts fall back without them.
+
+- **Ubuntu / WSL:** `sudo apt install curl jq openssl`
+- **macOS:** `curl` and `openssl` ship with the OS; `brew install jq`
+
+## "CPUs available to Docker: N"
+
+A **warning, not a failure**. Labs 04–06 run three gateways plus a database; below 4 CPUs they
+still work but everything is sluggish. Docker Desktop → Settings → Resources → CPUs; on WSL2,
+`processors=` in `C:\Users\<you>\.wslconfig` followed by `wsl --shutdown`.
+
 ## "Could not pull …" (course images)
 
 The preflight pulls every image the labs use so the multi-GB download happens now, not over
@@ -353,6 +405,49 @@ your proxy or firewall:
   `"proxies": {"default": {…}}` so they're passed into every container.
 - **Corporate VPN clients** sometimes block container traffic entirely; try disconnecting the
   VPN and re-running the preflight to confirm.
+
+## "The gateway container cannot write to a directory mounted from here"
+
+Every lab bind-mounts `./projects` and `./services/config` from the lab folder into the gateway
+container, and the Ignition image runs as **uid 2003**. Docker Desktop on macOS and Windows
+quietly maps that to your own user, so it just works there. On **native Linux and on WSL2**, bind
+mounts keep real file permissions: a folder you own with the default mode `755` is read-only to
+uid 2003, and the gateway can't save projects, write config or apply a deploy. On Fedora/RHEL,
+SELinux blocks it even when the permissions are fine.
+
+**Recommended fix — run the gateway as *you*.** The official image accepts `IGNITION_UID` /
+`IGNITION_GID` when started as root and steps down to that user before launching the gateway.
+Create `docker-compose.override.yaml` next to the lab's `docker-compose.yaml` (compose picks it
+up automatically). Use the gateway service names from that lab's compose file — labs 04/05 call
+them `ignition-local`, `ignition-dev`, `ignition-prod`; lab 06 `gateway-loc`, `gateway-dev`,
+`gateway-prod`; lab 07 `gateway`:
+
+```yaml
+# docker-compose.override.yaml — Linux/WSL2 only: run the gateways as my user
+# so the bind-mounted ./projects and ./services/config stay mine.
+x-as-me: &as-me
+  user: root                      # entrypoint needs root to remap, then drops to IGNITION_UID
+  environment:
+    IGNITION_UID: "1000"          # your uid:  id -u
+    IGNITION_GID: "1000"          # your gid:  id -g
+
+services:
+  ignition-local: *as-me
+  ignition-dev:   *as-me
+  ignition-prod:  *as-me
+```
+
+Fill in your real `id -u` / `id -g` (1000 is the first user on most distros). The `environment`
+block merges with the lab's own, so nothing else changes. Because the override file is only for
+your machine, don't commit it.
+
+**Quick-and-dirty alternative:** make the mounted folders writable by everyone —
+`chmod -R a+rwX ./projects ./services/config` in the lab folder. Files the gateway creates will
+then be owned by uid 2003 and you'll need `sudo` to delete them, which is why the override is
+the better option.
+
+**SELinux (Fedora/RHEL):** additionally add `:z` to each bind mount in the override, e.g.
+`- ./projects:/usr/local/bin/ignition/data/projects:z`, or `sudo chcon -Rt container_file_t ./projects ./services/config`.
 
 ## "Gateway did not respond within 90s"
 

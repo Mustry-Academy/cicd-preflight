@@ -45,9 +45,14 @@ Every check is one of two tiers:
 | Working directory is on the Linux filesystem, not `/mnt/c` (WSL only) | Required |
 | Not running as root / under `sudo` | Required |
 | `git` ≥ 2.40, with a commit identity (`user.name` / `user.email`) | Required |
+| `core.autocrlf` is not `true` (CRLF checkouts break every lab script) | Required |
+| `curl` installed | Required |
+| `jq` and `openssl` installed | Recommended |
+| Clock within 5 minutes of GitHub's (WSL2 drifts after hibernate) | Required |
 | `python3` ≥ 3.10 that can create a venv with pip (Lab 03 linters) | Required |
 | `docker` ≥ 24, daemon running, and `docker compose` v2 | Required |
 | Memory available to Docker ≥ 8 GB (labs 04–06 run three gateways + DB + runner) | Recommended |
+| CPUs available to Docker ≥ 4 | Recommended |
 | Logged in to Docker Hub (anonymous pulls are rate-limited per IP — the classroom shares one) | Recommended |
 | `gh` (GitHub CLI) installed and authenticated | Required |
 | `gh` token has the `repo` and `workflow` scopes (Lab 03 pushes workflow files) | Required |
@@ -57,9 +62,10 @@ Every check is one of two tiers:
 | No locally installed Ignition gateway (its service squats on 8088) | Recommended |
 | At least 20 GB free disk space | Recommended |
 | At least 8 GB total RAM | Recommended |
-| Containers can reach GitHub over HTTPS (detects corporate TLS interception) | Required |
+| Containers can reach GitHub and GHCR over HTTPS (detects corporate TLS interception) | Required |
 | Lab ports are free: 8088–8090, 8060–8062, 5432 | Required |
 | Can pull every course image (`ignition:8.3.6`, `timescaledb`, `github-runner`) | Required |
+| Gateway container (uid 2003) can write to a bind mount from the working directory | Required |
 | Gateway container starts and responds over HTTP | Required |
 
 ## If something fails

@@ -90,9 +90,12 @@ proxy vendor rather than Sectigo/DigiCert, this is the section for you.
 ### 1. Export the proxy's root certificate
 
 Ask IT for the root CA as a `.crt`/`.pem` file if you can — that's the fastest route.
-Otherwise export it yourself. You're looking for the certificate named in the `issuer:` part
-of your preflight report (or the one above it in the chain — export the topmost, self-signed
-one):
+Otherwise export it yourself. The `issuer:` in your preflight report names the certificate
+that signed what the container saw — often an *intermediate* (e.g. "Zscaler Intermediate
+Root CA"). You need the **root** above it: the topmost certificate in that chain, the one
+that is issued to itself. In the certificate viewer, open the `issuer:` entry, look at its
+*Certification Path* / chain, and export the top one. (The preflight checks this and tells
+you if you exported an intermediate.)
 
 - **Windows:** `Win+R` → `certmgr.msc` (or `certlm.msc` if it isn't there — IT usually
   installs into the machine store) → *Trusted Root Certification Authorities* →
@@ -145,16 +148,33 @@ in your home directory):
 services:
   github-runner:
     volumes:
-      # Where update-ca-certificates picks it up. Must end in .crt.
-      - ${CORP_CA_FILE:-~/corp-root.crt}:/usr/local/share/ca-certificates/corp-root.crt:ro
+      # Long syntax on purpose: with the short "src:dst" form Docker silently
+      # creates a DIRECTORY at the source when the file is missing.
+      - type: bind
+        source: ${CORP_CA_FILE:-~/corp-root.crt}
+        target: /usr/local/share/ca-certificates/corp-root.crt
+        read_only: true
+        bind:
+          create_host_path: false
     environment:
       # JavaScript actions (actions/checkout etc.) run under the runner's own
       # bundled node, which ignores the system store and needs this pointer.
       NODE_EXTRA_CA_CERTS: /usr/local/share/ca-certificates/corp-root.crt
-    # Rebuild the system CA bundle from the mounted cert, then hand over to the
-    # image's own entrypoint. Overriding entrypoint clears the image's CMD, so
-    # it is restated below. ($$@ is compose's escape for a literal $@.)
-    entrypoint: ["/bin/bash", "-c", "update-ca-certificates >/dev/null 2>&1 && exec /entrypoint.sh \"$$@\"", "--"]
+    # Rebuild the system CA bundle from the mounted cert, prove it is now a
+    # trusted root, then hand over to the image's own entrypoint. Overriding
+    # entrypoint clears the image's CMD, so it is restated below.
+    # ($$@ is compose's escape for a literal $@.)
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        update-ca-certificates >/dev/null 2>&1
+        if ! openssl verify -CAfile /etc/ssl/certs/ca-certificates.crt /usr/local/share/ca-certificates/corp-root.crt >/dev/null 2>&1; then
+          echo "corp-ca: corp-root.crt was not installed as a trusted root — is it a PEM file containing the self-signed ROOT certificate?" >&2
+          exit 1
+        fi
+        exec /entrypoint.sh "$$@"
+      - --
     command: ["./bin/Runner.Listener", "run", "--startuptype", "service"]
 ```
 
@@ -173,11 +193,31 @@ docker compose logs github-runner | head -20
 ```
 
 You should see the GitHub Actions banner and `Runner successfully added`, not an SSL error.
+If the container refuses to start with `bind source path does not exist`, `~/corp-root.crt`
+isn't there (step 1). If the log's only line is `corp-ca: … was not installed as a trusted
+root`, the file isn't PEM or isn't the self-signed root (step 1 again; the preflight tells you
+which).
 
 What this covers inside the runner: `Runner.Listener` (registration, job polling), `git`
 and `curl`/`gh` in your workflow steps (system CA bundle), and JavaScript actions such as
 `actions/checkout` (`NODE_EXTRA_CA_CERTS`). Workflow steps that use `docker` talk to the
 host's daemon over the mounted socket, so they already trust the proxy like the host does.
+
+### The host fails too
+
+If the preflight says *"This machine cannot verify GitHub's certificate (curl exit 60)"*,
+the proxy's root CA isn't trusted by the operating system the script runs in either. On
+Windows that means it was pushed to the Windows certificate store but not into your WSL
+distro — which is normal, IT tools don't know about WSL. Install it there once (this is the
+one place in the course where `sudo` is legitimate — it's system configuration, not a lab):
+
+```bash
+sudo cp ~/corp-root.crt /usr/local/share/ca-certificates/corp-root.crt
+sudo update-ca-certificates
+```
+
+Re-run the preflight; it will now get past the host check and on to the container probe,
+where `~/corp-root.crt` is picked up as described above.
 
 ### 4. If you can't export the certificate
 

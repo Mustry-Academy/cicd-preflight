@@ -194,6 +194,27 @@ container_https_probe_with_ca() {
     --cacert /corp-root.crt -sS -o /dev/null --max-time 15 "https://$1/" >/dev/null 2>&1
 }
 
+# corp_ca_has_root — true when CORP_CA_FILE contains at least one self-signed
+# certificate. curl accepts a partial chain, so an exported *intermediate*
+# would pass the probe above — but update-ca-certificates/OpenSSL in the
+# runner need the root, so we'd be handing out a false green. Best-effort:
+# without a host openssl we can't tell and let it through.
+corp_ca_has_root() {
+  command -v openssl >/dev/null 2>&1 || return 0
+  local n i
+  n="$(grep -c 'BEGIN CERTIFICATE' "$CORP_CA_FILE" 2>/dev/null || echo 0)"
+  for i in $(seq 1 "$n"); do
+    # Print subject and issuer without their labels; a duplicate line means
+    # they're equal, i.e. self-signed. Works for OpenSSL and LibreSSL output.
+    if awk -v k="$i" '/BEGIN CERTIFICATE/{c++} c==k' "$CORP_CA_FILE" \
+         | openssl x509 -noout -subject -issuer 2>/dev/null \
+         | sed 's/^[a-z]*= *//' | uniq -d | grep -q .; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # container_cert_issuer HOST — who signed the certificate a container sees for
 # HOST. Only used for the report after a verification failure: -k skips the
 # check so curl will still print the chain, and nothing is downloaded (-o
@@ -514,56 +535,88 @@ if ! docker_ready; then
   log_warn "Skipping container HTTPS check (Docker not available)" "Fix Docker first, then re-run"
 elif ! command -v curl >/dev/null 2>&1; then
   log_warn "Skipping container HTTPS check (curl not found on this machine)" "Install curl and re-run"
-elif ! curl -sS -o /dev/null --max-time 15 https://api.github.com/ 2>/dev/null; then
-  # If the host itself can't reach GitHub there's no point probing a container;
-  # the fix (proxy/firewall) is upstream of Docker.
-  log_missing "$REQUIRED" "This machine cannot reach https://api.github.com" "Check your internet connection and proxy settings, then re-run"
 else
-  # Proxy env vars are worth a note: Docker Desktop does not pass them into
-  # containers unless configured in Settings → Resources → Proxies.
-  for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy; do
-    if [ -n "${!v:-}" ]; then
-      log_info "$v is set on this machine (${!v}) — containers only inherit it if Docker is configured for the proxy"
-      break
-    fi
-  done
-
-  # Only pull when the image isn't cached, so re-runs stay fast and offline-ish.
-  if ! docker image inspect "$CURL_IMAGE" >/dev/null 2>&1 \
-     && ! docker pull "$CURL_IMAGE" >/dev/null 2>&1; then
-    log_warn "Skipping container HTTPS check (could not pull $CURL_IMAGE)" "If the Ignition image pull below also fails, fix that first; otherwise re-run"
+  # If the host itself can't reach GitHub there's no point probing a container;
+  # the fix is upstream of Docker. Exit 60 is the one case worth naming: the
+  # corporate CA isn't installed in this OS (on WSL, IT often pushes it to
+  # Windows only), which is a different fix from a proxy/firewall problem.
+  curl -sS -o /dev/null --max-time 15 https://api.github.com/ 2>/dev/null
+  HOST_HTTPS_RC=$?
+  if [ "$HOST_HTTPS_RC" -eq 60 ]; then
+    log_missing "$REQUIRED" "This machine cannot verify GitHub's certificate (curl exit 60) — the corporate CA isn't trusted by this OS/WSL distro" "Install it here first: see troubleshooting.md → 'TLS interception detected' → 'The host fails too'"
+  elif [ "$HOST_HTTPS_RC" -ne 0 ]; then
+    log_missing "$REQUIRED" "This machine cannot reach https://api.github.com (curl exit $HOST_HTTPS_RC)" "Check your internet connection and proxy settings, then re-run"
   else
-    say "  Probing GitHub over HTTPS from a throwaway container..."
-    CONTAINER_HTTPS_FAILED_HOST=""
-    CONTAINER_HTTPS_RC=0
-    for host in $GITHUB_HOSTS; do
-      # Capture the status explicitly: inside `if ! cmd` $? is the negation.
-      container_https_probe "$host"
-      CONTAINER_HTTPS_RC=$?
-      if [ "$CONTAINER_HTTPS_RC" -ne 0 ]; then
-        CONTAINER_HTTPS_FAILED_HOST="$host"
+    # Proxy env vars are worth a note: Docker Desktop does not pass them into
+    # containers unless configured in Settings → Resources → Proxies. Strip any
+    # user:password@ — the report gets pasted into Discord.
+    for v in HTTPS_PROXY https_proxy HTTP_PROXY http_proxy; do
+      if [ -n "${!v:-}" ]; then
+        log_info "$v is set on this machine ($(printf '%s' "${!v}" | sed -E 's#://[^@/]*@#://***@#')) — containers only inherit it if Docker is configured for the proxy"
         break
       fi
     done
 
-    if [ -z "$CONTAINER_HTTPS_FAILED_HOST" ]; then
-      log_pass "Containers can reach GitHub over HTTPS ($GITHUB_HOSTS)"
-    elif [ "$CONTAINER_HTTPS_RC" -eq 60 ]; then
-      # 60 = CURLE_PEER_FAILED_VERIFICATION: the transport works, but the
-      # certificate the container sees isn't signed by a CA it trusts. Since
-      # the host just reached GitHub fine, that's the TLS-interception
-      # signature: the corporate root CA is on the laptop but not in the image.
-      ISSUER="$(container_cert_issuer "$CONTAINER_HTTPS_FAILED_HOST")"
-      if [ -f "$CORP_CA_FILE" ] && container_https_probe_with_ca "$CONTAINER_HTTPS_FAILED_HOST"; then
-        log_pass "Containers can reach GitHub over HTTPS using your corporate CA ($CORP_CA_FILE; proxy issuer: ${ISSUER:-unknown})"
-        log_info "Remember the docker-compose.corp-ca.yaml override for the Lab 06 / capstone runner — see troubleshooting.md → 'TLS interception detected'"
-      elif [ -f "$CORP_CA_FILE" ]; then
-        log_missing "$REQUIRED" "TLS interception detected: $CORP_CA_FILE exists but does not make $CONTAINER_HTTPS_FAILED_HOST verify (issuer: ${ISSUER:-unknown})" "Wrong or incomplete certificate: export the ROOT of the chain (the issuer above), in PEM format. See troubleshooting.md → 'TLS interception detected'"
-      else
-        log_missing "$REQUIRED" "TLS interception detected: containers cannot verify the certificate for $CONTAINER_HTTPS_FAILED_HOST (issuer: ${ISSUER:-unknown})" "A corporate proxy re-signs HTTPS traffic and containers don't trust its CA. See troubleshooting.md → 'TLS interception detected'"
-      fi
+    # Only pull when the image isn't cached, so re-runs stay fast and offline-ish.
+    if ! docker image inspect "$CURL_IMAGE" >/dev/null 2>&1 \
+       && ! docker pull "$CURL_IMAGE" >/dev/null 2>&1; then
+      log_warn "Skipping container HTTPS check (could not pull $CURL_IMAGE)" "If the Ignition image pull below also fails, fix that first; otherwise re-run"
     else
-      log_missing "$REQUIRED" "Containers cannot reach https://$CONTAINER_HTTPS_FAILED_HOST (curl exit $CONTAINER_HTTPS_RC) although this machine can" "Docker's network isn't getting out. Configure the proxy in Docker Desktop → Settings → Resources → Proxies, or see troubleshooting.md → 'Containers cannot reach GitHub'"
+      say "  Probing GitHub over HTTPS from a throwaway container..."
+      CONTAINER_HTTPS_FAILED_HOST=""
+      CONTAINER_HTTPS_RC=0
+      for host in $GITHUB_HOSTS; do
+        # Capture the status explicitly: inside `if ! cmd` $? is the negation.
+        container_https_probe "$host"
+        CONTAINER_HTTPS_RC=$?
+        if [ "$CONTAINER_HTTPS_RC" -ne 0 ]; then
+          CONTAINER_HTTPS_FAILED_HOST="$host"
+          break
+        fi
+      done
+
+      if [ -z "$CONTAINER_HTTPS_FAILED_HOST" ]; then
+        log_pass "Containers can reach GitHub over HTTPS ($GITHUB_HOSTS)"
+      elif [ "$CONTAINER_HTTPS_RC" -eq 60 ]; then
+        # 60 = CURLE_PEER_FAILED_VERIFICATION: the transport works, but the
+        # certificate the container sees isn't signed by a CA it trusts. Since
+        # the host just reached GitHub fine, that's the TLS-interception
+        # signature: the corporate root CA is on the laptop but not in the image.
+        ISSUER="$(container_cert_issuer "$CONTAINER_HTTPS_FAILED_HOST")"
+        if [ -d "$CORP_CA_FILE" ]; then
+          # Docker creates a *directory* at a bind-mount source that doesn't
+          # exist — the classic result of enabling the compose override before
+          # exporting the certificate.
+          log_missing "$REQUIRED" "TLS interception detected, and $CORP_CA_FILE is a directory, not a certificate (issuer: ${ISSUER:-unknown})" "Docker created it when the runner override ran before the cert existed. 'rm -r $CORP_CA_FILE', then export the certificate there — see troubleshooting.md → 'TLS interception detected'"
+        elif [ ! -f "$CORP_CA_FILE" ]; then
+          log_missing "$REQUIRED" "TLS interception detected: containers cannot verify the certificate for $CONTAINER_HTTPS_FAILED_HOST (issuer: ${ISSUER:-unknown})" "A corporate proxy re-signs HTTPS traffic and containers don't trust its CA. See troubleshooting.md → 'TLS interception detected'"
+        elif ! corp_ca_has_root; then
+          log_missing "$REQUIRED" "TLS interception detected: $CORP_CA_FILE has no self-signed root certificate in it (issuer seen: ${ISSUER:-unknown})" "You exported an intermediate. The runner needs the ROOT: the topmost, self-signed certificate of the chain — see troubleshooting.md → 'TLS interception detected'"
+        else
+          # The student has done the fix. Re-probe *every* host trusting the
+          # corporate CA — a proxy can intercept one host and block another.
+          CA_FAILED_HOST=""
+          CA_RC=0
+          for host in $GITHUB_HOSTS; do
+            container_https_probe_with_ca "$host"
+            CA_RC=$?
+            if [ "$CA_RC" -ne 0 ]; then
+              CA_FAILED_HOST="$host"
+              break
+            fi
+          done
+          if [ -z "$CA_FAILED_HOST" ]; then
+            log_pass "Containers can reach GitHub over HTTPS using your corporate CA ($CORP_CA_FILE; proxy issuer: ${ISSUER:-unknown})"
+            log_info "Remember the docker-compose.corp-ca.yaml override for the Lab 06 / capstone runner — see troubleshooting.md → 'TLS interception detected'"
+          elif [ "$CA_RC" -eq 60 ]; then
+            log_missing "$REQUIRED" "TLS interception detected: $CORP_CA_FILE does not make $CA_FAILED_HOST verify (issuer: ${ISSUER:-unknown})" "Wrong certificate, or a different CA is used for this host. Export the root named as issuer above — see troubleshooting.md → 'TLS interception detected'"
+          else
+            log_missing "$REQUIRED" "Even with your corporate CA, containers cannot reach https://$CA_FAILED_HOST (curl exit $CA_RC)" "The proxy trusts fine but this host is blocked or unreachable from containers. See troubleshooting.md → 'Containers cannot reach GitHub'"
+          fi
+        fi
+      else
+        log_missing "$REQUIRED" "Containers cannot reach https://$CONTAINER_HTTPS_FAILED_HOST (curl exit $CONTAINER_HTTPS_RC) although this machine can" "Docker's network isn't getting out. Configure the proxy in Docker Desktop → Settings → Resources → Proxies, or see troubleshooting.md → 'Containers cannot reach GitHub'"
+      fi
     fi
   fi
 fi

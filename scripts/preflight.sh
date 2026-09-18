@@ -86,12 +86,14 @@ section() {
 #
 #   required     You cannot complete Day 1 without it. A miss is a hard FAILURE
 #                and the script exits non-zero, so CI and the TA can gate on it.
-#                  → OS, git, docker, gh, container HTTPS, ignition image,
+#                  → OS, git (+identity), python, docker, gh (+scopes, push
+#                    auth), container HTTPS, host ports, course images,
 #                    gateway smoke test
 #
 #   recommended  Things work without it, but the labs are rougher. A miss is a
 #                WARNING only and never changes the exit code.
-#                  → VS Code, Designer Launcher, disk, RAM
+#                  → VS Code, Designer Launcher, disk, RAM, Docker memory,
+#                    Docker Hub login, local Ignition install
 #
 # Soft sub-conditions can still downgrade: Docker is *required*, but "Docker is
 # installed yet below the recommended version" is only a warning, because an old
@@ -225,6 +227,53 @@ container_cert_issuer() {
     | sed -n 's/^\* *issuer: *//p' | head -1
 }
 
+# ---------------------------------------------------------------------------
+# Course inventory (what the labs actually publish and pull)
+# ---------------------------------------------------------------------------
+# Images every lab laptop needs. Pulled in full during the preflight so the
+# multi-GB download happens a week early and not over classroom Wi-Fi — and
+# because Docker Hub rate-limits anonymous pulls PER IP ADDRESS, a whole room
+# behind one NAT pulling on Day 1 gets throttled. (Capstone server-side images
+# such as caddy/postgres are deliberately not in this list.)
+COURSE_IMAGES="$IGNITION_IMAGE timescale/timescaledb:latest-pg16 myoung34/github-runner:latest"
+
+# Host ports the lab compose files publish (labs 02–07). 80/443 are only used
+# by the capstone's server-side stack, so they are not checked here.
+LAB_PORTS="8088 8089 8090 8060 8061 8062 5432"
+
+# docker_hub_logged_in — Docker keeps a per-registry entry in config.json once
+# `docker login` has succeeded, even when the secret itself lives in a
+# credential helper (the entry is then just an empty object).
+docker_hub_logged_in() {
+  grep -q 'index.docker.io' "${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null
+}
+
+# ssh_github_ok — a working SSH key for GitHub. GitHub closes the session with
+# exit 1 even on success, so we look at the greeting instead of the status.
+ssh_github_ok() {
+  command -v ssh >/dev/null 2>&1 || return 1
+  ssh -T -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+      git@github.com 2>&1 | grep -q 'successfully authenticated'
+}
+
+# port_owner PORT — best-effort name of what holds PORT, for the report. A
+# running container of the student's own is the most common answer (a lab
+# stack left up), so ask Docker first; the host view only ever shows the
+# Docker proxy for those. On WSL2 a Windows-side program is invisible from here.
+port_owner() {
+  local c
+  c="$(docker ps --filter "publish=$1" --format '{{.Names}}' 2>/dev/null | head -1)"
+  if [ -n "$c" ]; then
+    echo "container $c"
+    return
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1}'
+  elif command -v ss >/dev/null 2>&1; then
+    ss -ltnp "sport = :$1" 2>/dev/null | sed -n 's/.*users:(("\([^"]*\)".*/\1/p' | head -1
+  fi
+}
+
 # mark_launcher_found DIR — used by the Designer check. A designerlauncher* file
 # inside DIR means the launcher has actually been configured ("strong"); a bare
 # dir is a weaker hint ("weak"). Updates the DESIGNER_* globals.
@@ -247,7 +296,7 @@ Mustry Academy preflight — checks your machine is ready for Day 1.
 Usage: scripts/preflight.sh [options]
 
 Options:
-  --no-pull       Skip pulling the Ignition image (use a locally cached one)
+  --no-pull       Skip pulling the course images (use locally cached ones)
   --skip-smoke    Skip starting the throwaway gateway container
   --quiet         Only print warnings, failures and the summary
   -h, --help      Show this help and exit
@@ -361,8 +410,41 @@ if command -v git >/dev/null 2>&1; then
   else
     log_warn "git $GIT_VERSION (recommend ≥ 2.40)" "Consider upgrading; older versions work but some commands behave differently"
   fi
+
+  # Lab 01 starts with a commit. Without an identity git refuses with a
+  # message that confuses first-timers. Read from inside the repo so a
+  # conditional include for ~/mustry-academy counts too. Name only in the
+  # report — the email is nobody else's business.
+  if [ -n "$(git config --get user.name 2>/dev/null)" ] && [ -n "$(git config --get user.email 2>/dev/null)" ]; then
+    log_pass "Commit identity set ($(git config --get user.name))"
+  else
+    log_missing "$REQUIRED" "git has no commit identity (user.name / user.email)" "Run: git config --global user.name \"Your Name\" && git config --global user.email \"you@example.com\""
+  fi
 else
   log_missing "$REQUIRED" "git not found" "Install Git from https://git-scm.com/"
+fi
+
+# --- Python (required) -----------------------------------------------------
+# Lab 02–07 scripts hard-exit without python3, and Lab 03 installs its linters
+# (ign-lint needs ≥ 3.10) into a venv. Ubuntu/WSL ships python3 WITHOUT the
+# venv module, so we actually create one rather than trusting `command -v`.
+section "Python"
+if command -v python3 >/dev/null 2>&1; then
+  PY_VERSION="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo 0)"
+  if version_ge "$PY_VERSION" "3.10"; then
+    log_pass "python3 $PY_VERSION"
+  else
+    log_missing "$REQUIRED" "python3 $PY_VERSION is too old (Lab 03's ign-lint needs ≥ 3.10)" "Ubuntu 22.04+ ships a new enough Python; on macOS: brew install python"
+  fi
+  VENV_TMP="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/preflight-venv-$$")"
+  if python3 -m venv "$VENV_TMP/venv" >/dev/null 2>&1 && [ -x "$VENV_TMP/venv/bin/pip" ]; then
+    log_pass "python3 can create virtual environments (venv + pip)"
+  else
+    log_missing "$REQUIRED" "python3 cannot create a virtual environment with pip" "Ubuntu/WSL: sudo apt install python3-venv — Lab 03 installs its linters into a venv"
+  fi
+  rm -rf "$VENV_TMP"
+else
+  log_missing "$REQUIRED" "python3 not found" "Ubuntu/WSL: sudo apt install python3 python3-venv. macOS: brew install python"
 fi
 
 # --- Docker (required) -----------------------------------------------------
@@ -377,6 +459,27 @@ if command -v docker >/dev/null 2>&1; then
 
   if docker info >/dev/null 2>&1; then
     log_pass "Docker daemon is running"
+
+    # Memory Docker can actually use. On Docker Desktop that's the VM's
+    # allocation, not the laptop's RAM (a 16 GB Mac often gives Docker 4 GB);
+    # on WSL2 it's the .wslconfig limit. Labs 04–06 run three 1 GB gateways +
+    # TimescaleDB + the runner and need ≥ 8 GB here. Rounded to the nearest GB
+    # because the kernel reserves a little below the configured figure.
+    DOCKER_MEM_BYTES="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+    DOCKER_MEM_GB=$(( (DOCKER_MEM_BYTES + 512 * 1024 * 1024) / 1024 / 1024 / 1024 ))
+    if [ "$DOCKER_MEM_BYTES" -eq 0 ] 2>/dev/null; then
+      log_info "Could not read how much memory Docker has — check Docker Desktop → Settings → Resources"
+    elif [ "$DOCKER_MEM_GB" -ge 8 ]; then
+      log_pass "Memory available to Docker: ${DOCKER_MEM_GB} GB"
+    else
+      log_missing "$RECOMMENDED" "Memory available to Docker: ${DOCKER_MEM_GB} GB (labs 04–06 need ≥ 8 GB)" "Docker Desktop → Settings → Resources → Memory. On WSL2: raise memory= in C:\\Users\\<you>\\.wslconfig, then 'wsl --shutdown'"
+    fi
+
+    if docker_hub_logged_in; then
+      log_pass "Logged in to Docker Hub"
+    else
+      log_missing "$RECOMMENDED" "Not logged in to Docker Hub" "Anonymous pulls are rate-limited per IP address and the whole classroom shares one. Create a free account at hub.docker.com and run 'docker login'"
+    fi
   else
     log_missing "$REQUIRED" "Docker daemon is not running" "Start Docker Desktop (Win/Mac) or run 'sudo systemctl start docker' (Linux)"
   fi
@@ -397,6 +500,38 @@ if command -v gh >/dev/null 2>&1; then
   log_pass "gh $(gh --version | head -1 | awk '{print $3}')"
   if gh auth status >/dev/null 2>&1; then
     log_pass "Authenticated to GitHub as $(gh api user --jq .login 2>/dev/null || echo unknown)"
+
+    # Token scopes. Lab 03 pushes .github/workflows/*.yml, which GitHub
+    # refuses over HTTPS unless the token has `workflow` — older gh logins
+    # don't. Fine-grained tokens don't report scopes; let those through.
+    GH_SCOPES="$(gh api -i user 2>/dev/null | sed -n 's/^[Xx]-[Oo][Aa]uth-[Ss]copes: *//p' | tr -d '\r')"
+    if [ -z "$GH_SCOPES" ]; then
+      log_info "Could not read the token's scopes (fine-grained token?) — make sure it can push code and workflow files to your forks"
+    else
+      GH_MISSING_SCOPES=""
+      for sc in repo workflow; do
+        echo "$GH_SCOPES" | grep -qw "$sc" || GH_MISSING_SCOPES="$GH_MISSING_SCOPES $sc"
+      done
+      if [ -z "$GH_MISSING_SCOPES" ]; then
+        log_pass "Token scopes include repo and workflow"
+      else
+        log_missing "$REQUIRED" "gh token is missing scope(s):$GH_MISSING_SCOPES" "Run: gh auth refresh -h github.com -s repo,workflow — without 'workflow', pushing a GitHub Actions file is rejected"
+      fi
+    fi
+
+    # gh being logged in doesn't mean `git push` is: git needs either gh as
+    # its HTTPS credential helper or a working SSH key. GitHub no longer
+    # accepts passwords, so a bare HTTPS setup fails at the first push.
+    GIT_CRED_HELPERS="$(git config --get-all credential.helper 2>/dev/null | tr '\n' ' ')"
+    if echo "$GIT_CRED_HELPERS" | grep -q 'gh auth git-credential'; then
+      log_pass "git authenticates to GitHub through gh (HTTPS)"
+    elif ssh_github_ok; then
+      log_pass "git authenticates to GitHub over SSH"
+    elif [ -n "$GIT_CRED_HELPERS" ]; then
+      log_warn "git uses credential helper '${GIT_CRED_HELPERS% }' and has no working SSH key" "If 'git push' asks for a password, run 'gh auth setup-git' so git reuses gh's token"
+    else
+      log_missing "$REQUIRED" "git has no way to authenticate to GitHub (no credential helper, no SSH key)" "Run 'gh auth setup-git' — GitHub does not accept passwords for git push"
+    fi
   else
     log_missing "$REQUIRED" "gh is not authenticated" "Run 'gh auth login' and follow the prompts"
   fi
@@ -452,6 +587,18 @@ case "$OS" in
     fi
     ;;
 esac
+
+# A locally *installed* gateway is the opposite of helpful: its service grabs
+# 8088 at boot, so the lab gateways can't bind. Detection is path-based; on
+# WSL2 the Windows install is what matters.
+LOCAL_IGNITION=""
+for p in /usr/local/ignition /opt/ignition /usr/local/bin/ignition "/Applications/Ignition"* \
+         "$HOME/ignition" "/mnt/c/Program Files/Inductive Automation/Ignition"; do
+  [ -e "$p" ] && { LOCAL_IGNITION="$p"; break; }
+done
+if [ -n "$LOCAL_IGNITION" ]; then
+  log_missing "$RECOMMENDED" "A local Ignition gateway install was found ($LOCAL_IGNITION)" "Its service listens on 8088 and starts at boot, which blocks the lab gateways. Stop and disable the 'Ignition Gateway' service (or uninstall) before the course; the labs run gateways in Docker only"
+fi
 
 if [ "$DESIGNER_FOUND" = "strong" ]; then
   log_pass "Ignition Designer Launcher detected ($DESIGNER_WHERE)"
@@ -621,18 +768,51 @@ else
   fi
 fi
 
-# --- Ignition image (required) ---------------------------------------------
-section "Ignition image"
-if [ "$NO_PULL" -eq 1 ]; then
-  log_info "Skipping image pull (--no-pull) — relying on a locally cached image"
-elif ! docker_ready; then
-  log_warn "Skipping image pull (Docker not available)" "Fix Docker first, then re-run"
+# --- Host ports (required) -------------------------------------------------
+# The labs publish fixed ports. Rather than reading the host's listener table
+# (which on WSL2 can't see Windows programs), bind them all through Docker's
+# real publish path with a container that exits immediately — if a port is
+# taken, the run fails naming it. A locally installed PostgreSQL (5432) or
+# Ignition (8088) are the usual culprits.
+section "Host ports"
+if ! docker_ready; then
+  log_warn "Skipping port check (Docker not available)" "Fix Docker first, then re-run"
+elif ! docker image inspect "$CURL_IMAGE" >/dev/null 2>&1; then
+  log_warn "Skipping port check ($CURL_IMAGE not available)" "Re-run once the container HTTPS check above passes"
 else
-  say "  Pulling $IGNITION_IMAGE (this may take a few minutes on first run)..."
-  if docker pull "$IGNITION_IMAGE" >/dev/null 2>&1; then
-    log_pass "Pulled $IGNITION_IMAGE"
+  PORT_ARGS=()
+  for port in $LAB_PORTS; do PORT_ARGS+=(-p "$port:$port"); done
+  if docker run --rm "${PORT_ARGS[@]}" "$CURL_IMAGE" --version >/dev/null 2>&1; then
+    log_pass "Lab ports are free ($LAB_PORTS)"
   else
-    log_missing "$REQUIRED" "Could not pull $IGNITION_IMAGE" "Check internet connectivity and Docker Hub access; corporate firewalls sometimes block this"
+    BUSY_PORTS=""
+    for port in $LAB_PORTS; do
+      if ! docker run --rm -p "$port:$port" "$CURL_IMAGE" --version >/dev/null 2>&1; then
+        owner="$(port_owner "$port")"
+        BUSY_PORTS="$BUSY_PORTS $port${owner:+ ($owner)}"
+      fi
+    done
+    log_missing "$REQUIRED" "Port(s) already in use:${BUSY_PORTS:- (could not tell which)}" "Stop whatever is listening: 'docker compose down' in a lab you left running, or a local Ignition gateway (8088) / PostgreSQL (5432). On WSL2 the owner may be a Windows program that isn't visible from here"
+  fi
+fi
+
+# --- Course images (required) ----------------------------------------------
+section "Course images"
+if [ "$NO_PULL" -eq 1 ]; then
+  log_info "Skipping image pulls (--no-pull) — relying on locally cached images"
+elif ! docker_ready; then
+  log_warn "Skipping image pulls (Docker not available)" "Fix Docker first, then re-run"
+else
+  say "  Pulling all course images (several GB on first run — this is the slow step)..."
+  FAILED_IMAGES=""
+  for img in $COURSE_IMAGES; do
+    say "  · $img"
+    docker pull "$img" >/dev/null 2>&1 || FAILED_IMAGES="$FAILED_IMAGES $img"
+  done
+  if [ -z "$FAILED_IMAGES" ]; then
+    log_pass "All course images pulled ($COURSE_IMAGES)"
+  else
+    log_missing "$REQUIRED" "Could not pull:$FAILED_IMAGES" "Check internet connectivity and Docker Hub access; corporate firewalls sometimes block this. If only some failed, you may have hit Docker Hub's anonymous rate limit — 'docker login' and re-run"
   fi
 fi
 

@@ -22,13 +22,13 @@ The script writes a report to `./preflight-report.txt`. **Paste the contents of 
 ### Options
 
 ```
---no-pull       Skip pulling the Ignition image (use a locally cached one)
+--no-pull       Skip pulling the course images (use locally cached ones)
 --skip-smoke    Skip starting the throwaway gateway container
 --quiet         Only print warnings, failures and the summary
 -h, --help      Show this help and exit
 ```
 
-The image pull and gateway smoke test are the slow steps; `--no-pull --skip-smoke` makes for a fast re-run while you're fixing the lighter checks. Run `./scripts/preflight.sh --help` to see this list anytime.
+The image pulls and gateway smoke test are the slow steps; `--no-pull --skip-smoke` makes for a fast re-run while you're fixing the lighter checks. Run `./scripts/preflight.sh --help` to see this list anytime.
 
 ## What it checks
 
@@ -44,15 +44,22 @@ Every check is one of two tiers:
 | Operating system (and WSL2 on Windows) | Required |
 | Working directory is on the Linux filesystem, not `/mnt/c` (WSL only) | Required |
 | Not running as root / under `sudo` | Required |
-| `git` ≥ 2.40 | Required |
+| `git` ≥ 2.40, with a commit identity (`user.name` / `user.email`) | Required |
+| `python3` ≥ 3.10 that can create a venv with pip (Lab 03 linters) | Required |
 | `docker` ≥ 24, daemon running, and `docker compose` v2 | Required |
+| Memory available to Docker ≥ 8 GB (labs 04–06 run three gateways + DB + runner) | Recommended |
+| Logged in to Docker Hub (anonymous pulls are rate-limited per IP — the classroom shares one) | Recommended |
 | `gh` (GitHub CLI) installed and authenticated | Required |
+| `gh` token has the `repo` and `workflow` scopes (Lab 03 pushes workflow files) | Required |
+| `git push` can authenticate to GitHub (gh credential helper or SSH key) | Required |
 | VS Code installed (`code` on PATH) | Recommended |
 | Ignition Designer Launcher installed (best-effort detection) | Recommended |
+| No locally installed Ignition gateway (its service squats on 8088) | Recommended |
 | At least 20 GB free disk space | Recommended |
 | At least 8 GB total RAM | Recommended |
 | Containers can reach GitHub over HTTPS (detects corporate TLS interception) | Required |
-| Can pull `inductiveautomation/ignition:8.3.6` | Required |
+| Lab ports are free: 8088–8090, 8060–8062, 5432 | Required |
+| Can pull every course image (`ignition:8.3.6`, `timescaledb`, `github-runner`) | Required |
 | Gateway container starts and responds over HTTP | Required |
 
 ## If something fails

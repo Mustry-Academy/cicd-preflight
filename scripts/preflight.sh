@@ -245,7 +245,14 @@ LAB_PORTS="8088 8089 8090 8060 8061 8062 5432"
 # `docker login` has succeeded, even when the secret itself lives in a
 # credential helper (the entry is then just an empty object).
 docker_hub_logged_in() {
-  grep -q 'index.docker.io' "${DOCKER_CONFIG:-$HOME/.docker}/config.json" 2>/dev/null
+  local cfg store
+  cfg="${DOCKER_CONFIG:-$HOME/.docker}/config.json"
+  grep -q 'index.docker.io' "$cfg" 2>/dev/null && return 0
+  # Signing in through Docker Desktop's own UI can leave config.json without
+  # an auths entry; the credential helper it configures still knows.
+  store="$(sed -n 's/.*"credsStore" *: *"\([^"]*\)".*/\1/p' "$cfg" 2>/dev/null | head -1)"
+  [ -n "$store" ] && command -v "docker-credential-$store" >/dev/null 2>&1 \
+    && "docker-credential-$store" list 2>/dev/null | grep -q 'index.docker.io'
 }
 
 # ssh_github_ok — a working SSH key for GitHub. GitHub closes the session with
@@ -522,13 +529,20 @@ if command -v gh >/dev/null 2>&1; then
     # gh being logged in doesn't mean `git push` is: git needs either gh as
     # its HTTPS credential helper or a working SSH key. GitHub no longer
     # accepts passwords, so a bare HTTPS setup fails at the first push.
-    GIT_CRED_HELPERS="$(git config --get-all credential.helper 2>/dev/null | tr '\n' ' ')"
+    # `gh auth setup-git` registers its helper per host (credential
+    # "https://github.com"), not as the global credential.helper, so look at
+    # every credential.*helper key.
+    GIT_CRED_HELPERS="$(git config --get-regexp '^credential\..*helper$' 2>/dev/null | awk '{ $1=""; sub(/^ /, ""); if ($0 != "") print }' | sort -u | tr '\n' ' ')"
     if echo "$GIT_CRED_HELPERS" | grep -q 'gh auth git-credential'; then
       log_pass "git authenticates to GitHub through gh (HTTPS)"
     elif ssh_github_ok; then
       log_pass "git authenticates to GitHub over SSH"
+    elif ls "$HOME"/.ssh/id_* >/dev/null 2>&1; then
+      # A key exists but didn't work non-interactively — usually a passphrase
+      # with no agent (WSL doesn't start one). That still works at the prompt.
+      log_warn "An SSH key exists but did not authenticate to GitHub non-interactively" "Passphrase without an agent? Test with 'ssh -T git@github.com'. If that fails, run 'gh auth login' → SSH, or 'gh auth setup-git' for HTTPS"
     elif [ -n "$GIT_CRED_HELPERS" ]; then
-      log_warn "git uses credential helper '${GIT_CRED_HELPERS% }' and has no working SSH key" "If 'git push' asks for a password, run 'gh auth setup-git' so git reuses gh's token"
+      log_warn "git uses credential helper '${GIT_CRED_HELPERS% }' and has no SSH key" "If 'git push' asks for a password, run 'gh auth setup-git' so git reuses gh's token"
     else
       log_missing "$REQUIRED" "git has no way to authenticate to GitHub (no credential helper, no SSH key)" "Run 'gh auth setup-git' — GitHub does not accept passwords for git push"
     fi
@@ -592,9 +606,13 @@ esac
 # 8088 at boot, so the lab gateways can't bind. Detection is path-based; on
 # WSL2 the Windows install is what matters.
 LOCAL_IGNITION=""
-for p in /usr/local/ignition /opt/ignition /usr/local/bin/ignition "/Applications/Ignition"* \
+for p in /usr/local/ignition /opt/ignition "/Applications/Ignition"* \
          "$HOME/ignition" "/mnt/c/Program Files/Inductive Automation/Ignition"; do
-  [ -e "$p" ] && { LOCAL_IGNITION="$p"; break; }
+  # A gateway install has these; a folder that merely happens to be called
+  # "ignition" does not.
+  if [ -f "$p/data/ignition.conf" ] || [ -d "$p/lib/core/gateway" ]; then
+    LOCAL_IGNITION="$p"; break
+  fi
 done
 if [ -n "$LOCAL_IGNITION" ]; then
   log_missing "$RECOMMENDED" "A local Ignition gateway install was found ($LOCAL_IGNITION)" "Its service listens on 8088 and starts at boot, which blocks the lab gateways. Stop and disable the 'Ignition Gateway' service (or uninstall) before the course; the labs run gateways in Docker only"

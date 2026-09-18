@@ -143,9 +143,18 @@ gh auth setup-git
 ```
 
 or use SSH: `gh auth login` again, choose **SSH** and let it generate and upload a key, then clone
-your forks with the `git@github.com:` URLs. The warning variant (*"git uses credential helper
-'…'"*) means you have some other helper configured — it may well hold a valid token; if a push
-asks for a password, run `gh auth setup-git`.
+your forks with the `git@github.com:` URLs.
+
+Two **warning** variants of this check:
+
+- *"An SSH key exists but did not authenticate to GitHub non-interactively"* — usually a key
+  with a passphrase and no `ssh-agent` running (WSL doesn't start one). Test with
+  `ssh -T git@github.com`: if it asks for the passphrase and then greets you by name, you're
+  fine. If it says *Permission denied (publickey)*, the key isn't on your GitHub account —
+  `gh auth login` → SSH will upload it.
+- *"git uses credential helper '…'"* — some other helper (Git Credential Manager, osxkeychain)
+  is configured and may well hold a valid token; if a push asks for a password, run
+  `gh auth setup-git`.
 
 ## "Port(s) already in use"
 

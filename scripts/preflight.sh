@@ -126,7 +126,12 @@ is_wsl() {
 # ---------------------------------------------------------------------------
 # Docker / smoke-test helpers (shared by the image + smoke checks)
 # ---------------------------------------------------------------------------
+# The labs span two Ignition versions, so both have to be on the laptop before
+# Day 1. IGNITION_IMAGE is the one the smoke test and the bind-mount check run
+# against — they only ever need a single gateway — while IGNITION_IMAGES is the
+# full set that gets pulled.
 IGNITION_IMAGE="inductiveautomation/ignition:8.3.6"
+IGNITION_IMAGES="$IGNITION_IMAGE inductiveautomation/ignition:8.3.8"
 SMOKE_CONTAINER="mustry-preflight-gateway"
 
 # docker_ready — Docker is installed AND its daemon answers.
@@ -237,7 +242,7 @@ container_cert_issuer() {
 # because Docker Hub rate-limits anonymous pulls PER IP ADDRESS, a whole room
 # behind one NAT pulling on Day 1 gets throttled. (Capstone server-side images
 # such as caddy/postgres are deliberately not in this list.)
-COURSE_IMAGES="$IGNITION_IMAGE timescale/timescaledb:latest-pg16 myoung34/github-runner:latest"
+COURSE_IMAGES="$IGNITION_IMAGES timescale/timescaledb:latest-pg16 myoung34/github-runner:latest"
 
 # Host ports the lab compose files publish (labs 02–07). 80/443 are only used
 # by the capstone's server-side stack, so they are not checked here.

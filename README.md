@@ -64,7 +64,7 @@ Every check is one of two tiers:
 | At least 8 GB total RAM | Recommended |
 | Containers can reach GitHub and GHCR over HTTPS (detects corporate TLS interception) | Required |
 | Lab ports are free: 8088–8090, 8060–8062, 5432 | Required |
-| Can pull every course image (`ignition:8.3.6`, `timescaledb`, `github-runner`) | Required |
+| Can pull every course image (`ignition:8.3.6`, `ignition:8.3.8`, `timescaledb`, `github-runner`) | Required |
 | Gateway container (uid 2003) can write to a bind mount from the working directory | Required |
 | Gateway container starts and responds over HTTP | Required |
 

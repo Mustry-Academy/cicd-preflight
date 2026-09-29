@@ -505,12 +505,62 @@ fi
 # (ign-lint needs ≥ 3.10) into a venv. Ubuntu/WSL ships python3 WITHOUT the
 # venv module, so we actually create one rather than trusting `command -v`.
 section "Python"
+
+# py_version PYTHON — print its version as X.Y.Z, or 0 if it won't run.
+py_version() {
+  "$1" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo 0
+}
+
+# find_newer_python — print "VERSION PATH" for the newest python3 / python3.N
+# on this machine, looking on PATH and in the usual Homebrew prefixes. Students
+# often have a new Python installed that `python3` doesn't resolve to (on macOS,
+# /usr/bin ahead of /opt/homebrew/bin), and "install Python" is no help then.
+find_newer_python() {
+  local dir candidate version best_version=0 best_path=""
+  local IFS=:
+  for dir in $PATH /opt/homebrew/bin /usr/local/bin /home/linuxbrew/.linuxbrew/bin; do
+    for candidate in "$dir"/python3 "$dir"/python3.[0-9] "$dir"/python3.[0-9][0-9]; do
+      [ -x "$candidate" ] || continue
+      version="$(py_version "$candidate")"
+      if version_ge "$version" "$best_version" && [ "$version" != "$best_version" ]; then
+        best_version="$version"
+        best_path="$candidate"
+      fi
+    done
+  done
+  [ -n "$best_path" ] && echo "$best_version $best_path"
+}
+
 if command -v python3 >/dev/null 2>&1; then
-  PY_VERSION="$(python3 -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo 0)"
+  PY_PATH="$(command -v python3)"
+  PY_VERSION="$(py_version python3)"
   if version_ge "$PY_VERSION" "3.10"; then
-    log_pass "python3 $PY_VERSION"
+    log_pass "python3 $PY_VERSION ($PY_PATH)"
   else
-    log_missing "$REQUIRED" "python3 $PY_VERSION is too old (Lab 03's ign-lint needs ≥ 3.10)" "Ubuntu 22.04+ ships a new enough Python; on macOS: brew install python"
+    NEWER="$(find_newer_python)"
+    NEWER_VERSION="${NEWER%% *}"
+    NEWER_PATH="${NEWER#* }"
+    if [ -n "$NEWER" ] && version_ge "$NEWER_VERSION" "3.10"; then
+      # A new enough Python exists, but `python3` doesn't reach it — and the
+      # labs call plain `python3`, so this still fails. Say exactly how to fix it.
+      # The literal ~ is text for the student to paste, not a path we open.
+      # shellcheck disable=SC2088
+      case "$(basename "${SHELL:-}")" in
+        bash) SHELL_PROFILE="~/.bash_profile" ;;
+        *)    SHELL_PROFILE="~/.zprofile" ;;
+      esac
+      NEWER_DIR="$(dirname "$NEWER_PATH")"
+      if [ "$NEWER_DIR" = "/opt/homebrew/bin" ] && [ -x /opt/homebrew/bin/brew ]; then
+        PY_FIX="Put Homebrew first on your PATH, then open a new terminal: echo 'eval \"\$(/opt/homebrew/bin/brew shellenv)\"' >> $SHELL_PROFILE"
+      elif [ "$(basename "$NEWER_PATH")" = "python3" ]; then
+        PY_FIX="Put $NEWER_DIR first on your PATH, then open a new terminal: echo 'export PATH=\"$NEWER_DIR:\$PATH\"' >> $SHELL_PROFILE"
+      else
+        PY_FIX="$NEWER_PATH is installed, but there is no python3 command for it. Make python3 a 3.10+ Python — see troubleshooting.md"
+      fi
+      log_missing "$REQUIRED" "python3 → $PY_PATH ($PY_VERSION), but Python $NEWER_VERSION is installed at $NEWER_PATH" "$PY_FIX. Don't use an alias: the lab scripts won't see it"
+    else
+      log_missing "$REQUIRED" "python3 $PY_VERSION ($PY_PATH) is too old (Lab 03's ign-lint needs ≥ 3.10)" "Ubuntu 22.04+ ships a new enough Python; on macOS: brew install python"
+    fi
   fi
   VENV_TMP="$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}/preflight-venv-$$")"
   if python3 -m venv "$VENV_TMP/venv" >/dev/null 2>&1 && [ -x "$VENV_TMP/venv/bin/pip" ]; then

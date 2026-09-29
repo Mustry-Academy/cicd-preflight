@@ -172,7 +172,38 @@ virtual environment; `ign-lint` needs Python 3.10+.
   Ubuntu 22.04+ ships Python 3.10+; on 20.04, `sudo apt install python3.11 python3.11-venv`.
 - **macOS:** the system `/usr/bin/python3` is often 3.9. Install a current one with
   `brew install python`, then open a new terminal so `python3` resolves to Homebrew's.
+  Still 3.9 after that? See the next section.
 - **Linux (other):** any 3.10+ from your package manager, plus its venv package if split out.
+
+## "python3 → … but Python 3.x is installed at …"
+
+You have a new enough Python, but typing `python3` runs an older one. The lab scripts call plain
+`python3`, so they would get the old one too. List every `python3` on your PATH, in the order your
+shell tries them:
+
+```bash
+which -a python3
+```
+
+The first line is the one that runs. On macOS it is usually Apple's `/usr/bin/python3` (3.9), sitting
+ahead of Homebrew's `/opt/homebrew/bin/python3`. This happens when Homebrew's post-install "Next
+steps" were skipped. Put Homebrew first on your PATH (use `~/.bash_profile` instead if your shell
+is bash):
+
+```bash
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+```
+
+Open a **new** terminal, check that `python3 --version` shows 3.10+, and rerun the preflight.
+
+- **The newer Python is somewhere else** (e.g. `/usr/local/bin`, pyenv, a manual install): put its
+  directory first on your PATH in the same file: `export PATH="/that/dir:$PATH"`.
+- **Only a versioned command exists** (e.g. `python3.12` but no `python3` next to it): on macOS,
+  `brew install python` gives you an unversioned `python3`. On Linux, install your distro's
+  default `python3` package at 3.10+ rather than repointing `/usr/bin/python3`, which your
+  package manager relies on.
+- **Don't fix it with `alias python3=…`.** Aliases only apply to the shell you type in, and the
+  lab scripts run in their own shell, so they would still get the old Python.
 
 ## "gh token is missing scope(s)"
 

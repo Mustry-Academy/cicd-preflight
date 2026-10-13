@@ -1,3 +1,6 @@
+> [!IMPORTANT]
+> **This repository has moved and is read-only.** The CI/CD for Ignition course now lives in one repo: [Mustry-Academy/cicd-for-ignition](https://github.com/Mustry-Academy/cicd-for-ignition), in [`preflight/`](https://github.com/Mustry-Academy/cicd-for-ignition/tree/main/preflight). This repo will be deleted after 14 December 2026.
+
 # CI/CD Masterclass — Preflight
 
 > Run this **at least 7 days before Day 1** to validate that your environment is ready.
